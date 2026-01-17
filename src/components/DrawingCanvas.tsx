@@ -1,37 +1,54 @@
 import React, { useRef, useEffect, useState } from 'react';
 
 type Point = { x: number; y: number };
-type Stroke = Point[];
+type ToolType = 'freehand' | 'line' | 'rect' | 'circle';
+
+type DrawingElement =
+    | { type: 'freehand'; points: Point[] }
+    | { type: 'line'; start: Point; end: Point }
+    | { type: 'rect'; start: Point; end: Point }
+    | { type: 'circle'; start: Point; end: Point };
 
 export const DrawingCanvas: React.FC = () => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const [items, setItems] = useState<DrawingElement[]>([]);
+    const [currentTool, setCurrentTool] = useState<ToolType>('freehand');
+
+    // For freehand
     const [isDrawing, setIsDrawing] = useState(false);
-    const [strokes, setStrokes] = useState<Stroke[]>([]);
-    const [currentStroke, setCurrentStroke] = useState<Stroke>([]);
+    const [currentPoints, setCurrentPoints] = useState<Point[]>([]);
+
+    // For shapes
+    const [dragStart, setDragStart] = useState<Point | null>(null);
+    const [dragCurrent, setDragCurrent] = useState<Point | null>(null);
+
+    // User Feedback
+    const [statusMessage, setStatusMessage] = useState<string | null>(null);
+
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    // Initial setup and resize handler
     useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
 
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-
         const resize = () => {
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
-            redrawAll(strokes); // Redraw existing strokes on resize
+            redrawAll();
         };
 
         window.addEventListener('resize', resize);
         resize();
 
         return () => window.removeEventListener('resize', resize);
-    }, [strokes]); // Re-bind resize if strokes change (to capture latest strokes in closure if needed, though passing arg is safer)
+    }, [items, currentPoints, dragStart, dragCurrent]);
 
-    // Redraw function
-    const redrawAll = (data: Stroke[]) => {
+    const showToast = (message: string, duration = 3000) => {
+        setStatusMessage(message);
+        setTimeout(() => setStatusMessage(null), duration);
+    };
+
+    const redrawAll = () => {
         const canvas = canvasRef.current;
         if (!canvas) return;
         const ctx = canvas.getContext('2d');
@@ -39,67 +56,91 @@ export const DrawingCanvas: React.FC = () => {
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        // Reset context styles
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         ctx.lineWidth = 3;
         ctx.strokeStyle = '#000000';
 
-        data.forEach(stroke => {
-            if (stroke.length < 1) return;
-            ctx.beginPath();
-            ctx.moveTo(stroke[0].x, stroke[0].y);
-            for (let i = 1; i < stroke.length; i++) {
-                ctx.lineTo(stroke[i].x, stroke[i].y);
-            }
-            ctx.stroke();
-        });
+        // Draw saved items
+        items.forEach(el => drawElement(ctx, el));
+
+        // Draw current interaction
+        if (isDrawing && currentTool === 'freehand' && currentPoints.length > 0) {
+            drawElement(ctx, { type: 'freehand', points: currentPoints });
+        } else if (dragStart && dragCurrent && currentTool !== 'freehand') {
+            drawElement(ctx, { type: currentTool, start: dragStart, end: dragCurrent } as DrawingElement);
+        }
     };
 
-    const startDrawing = (e: React.PointerEvent<HTMLCanvasElement>) => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-
-        setIsDrawing(true);
-        const startPoint = { x: e.clientX, y: e.clientY };
-        setCurrentStroke([startPoint]);
-
+    const drawElement = (ctx: CanvasRenderingContext2D, el: DrawingElement) => {
         ctx.beginPath();
-        ctx.moveTo(startPoint.x, startPoint.y);
-        // Ensure styles are set (in case of fresh logic)
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = '#000000';
-
-        canvas.setPointerCapture(e.pointerId);
-    };
-
-    const draw = (e: React.PointerEvent<HTMLCanvasElement>) => {
-        if (!isDrawing) return;
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-
-        const newPoint = { x: e.clientX, y: e.clientY };
-        setCurrentStroke(prev => [...prev, newPoint]);
-
-        ctx.lineTo(newPoint.x, newPoint.y);
+        if (el.type === 'freehand') {
+            if (el.points.length < 1) return;
+            ctx.moveTo(el.points[0].x, el.points[0].y);
+            for (let i = 1; i < el.points.length; i++) {
+                ctx.lineTo(el.points[i].x, el.points[i].y);
+            }
+        } else if (el.type === 'line') {
+            ctx.moveTo(el.start.x, el.start.y);
+            ctx.lineTo(el.end.x, el.end.y);
+        } else if (el.type === 'rect') {
+            const w = el.end.x - el.start.x;
+            const h = el.end.y - el.start.y;
+            ctx.rect(el.start.x, el.start.y, w, h);
+        } else if (el.type === 'circle') {
+            // Circle from center to current point
+            const r = Math.sqrt(
+                Math.pow(el.end.x - el.start.x, 2) + Math.pow(el.end.y - el.start.y, 2)
+            );
+            ctx.arc(el.start.x, el.start.y, r, 0, 2 * Math.PI);
+        }
         ctx.stroke();
     };
 
-    const stopDrawing = (e: React.PointerEvent<HTMLCanvasElement>) => {
-        if (!isDrawing) return;
-        setIsDrawing(false);
-        setStrokes(prev => [...prev, currentStroke]);
-        setCurrentStroke([]);
-
+    const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
         const canvas = canvasRef.current;
-        if (canvas) {
-            canvas.releasePointerCapture(e.pointerId);
+        if (!canvas) return;
+
+        canvas.setPointerCapture(e.pointerId);
+        const p = { x: e.clientX, y: e.clientY };
+
+        if (currentTool === 'freehand') {
+            setIsDrawing(true);
+            setCurrentPoints([p]);
+        } else {
+            setDragStart(p);
+            setDragCurrent(p);
+        }
+    };
+
+    const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+        const p = { x: e.clientX, y: e.clientY };
+
+        if (currentTool === 'freehand' && isDrawing) {
+            setCurrentPoints(prev => [...prev, p]);
+        } else if (dragStart) {
+            setDragCurrent(p);
+        }
+    };
+
+    const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+        const canvas = canvasRef.current;
+        if (canvas) canvas.releasePointerCapture(e.pointerId);
+
+        if (currentTool === 'freehand' && isDrawing) {
+            setIsDrawing(false);
+            if (currentPoints.length > 0) {
+                setItems(prev => [...prev, { type: 'freehand', points: currentPoints }]);
+            }
+            setCurrentPoints([]);
+        } else if (dragStart && dragCurrent) {
+            setItems(prev => [...prev, {
+                type: currentTool,
+                start: dragStart,
+                end: dragCurrent
+            } as DrawingElement]);
+            setDragStart(null);
+            setDragCurrent(null);
         }
     };
 
@@ -107,73 +148,133 @@ export const DrawingCanvas: React.FC = () => {
         const canvas = canvasRef.current;
         if (!canvas) return;
 
-        // Generate Timestamp
-        const now = new Date();
-        const timestamp = now.toISOString().slice(0, 19).replace(/T|:/g, '-');
-        const filenameBase = `drawing_${timestamp}`;
+        showToast("Generating files...");
 
-        // 1. Generate JSON Blob
-        const jsonString = JSON.stringify(strokes);
-        const jsonBlob = new Blob([jsonString], { type: "application/json" });
-        const jsonFile = new File([jsonBlob], `${filenameBase}.json`, { type: "application/json" });
+        try {
+            // Generate Timestamp
+            const now = new Date();
+            const timestamp = now.toISOString().slice(0, 19).replace(/T|:/g, '-');
+            const filenameBase = `draw-${timestamp}`;
 
-        // 2. Generate PNG Blob (with white background)
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = canvas.width;
-        tempCanvas.height = canvas.height;
-        const tempCtx = tempCanvas.getContext('2d');
-        if (!tempCtx) return;
+            // 1. Generate JSON Blob
+            const jsonData = {
+                version: 1,
+                items: items
+            };
+            const jsonString = JSON.stringify(jsonData);
+            const jsonBlob = new Blob([jsonString], { type: "application/json" });
+            const jsonFile = new File([jsonBlob], `${filenameBase}.json`, { type: "application/json" });
 
-        // Fill white background
-        tempCtx.fillStyle = '#ffffff';
-        tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
-        // Draw original canvas over it
-        tempCtx.drawImage(canvas, 0, 0);
+            // 2. Generate PNG Blob
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = canvas.width;
+            tempCanvas.height = canvas.height;
+            const tempCtx = tempCanvas.getContext('2d');
+            if (!tempCtx) throw new Error("Canvas context init failed");
 
-        const pngBlob = await new Promise<Blob | null>(resolve => tempCanvas.toBlob(resolve, 'image/png'));
-        if (!pngBlob) {
-            alert("Failed to generate image.");
-            return;
-        }
-        const pngFile = new File([pngBlob], `${filenameBase}.png`, { type: "image/png" });
+            tempCtx.fillStyle = '#ffffff';
+            tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+            tempCtx.drawImage(canvas, 0, 0);
 
-        // 3. Share or Download
-        const filesToShare = [jsonFile, pngFile];
+            const pngBlob = await new Promise<Blob | null>(resolve => tempCanvas.toBlob(resolve, 'image/png'));
+            if (!pngBlob) throw new Error("PNG generation failed");
+            const pngFile = new File([pngBlob], `${filenameBase}.png`, { type: "image/png" });
 
-        if (navigator.canShare && navigator.canShare({ files: filesToShare })) {
-            try {
-                await navigator.share({
-                    files: filesToShare,
-                    title: 'Simple Drawing',
-                    text: 'Here is my drawing!'
-                });
-                return; // Shared successfully
-            } catch (error) {
-                if ((error as Error).name !== 'AbortError') {
-                    console.error('Share failed', error);
+            // Helper to download file (Fallback)
+            const downloadFile = (blob: Blob, filename: string) => {
+                const href = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = href;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(href);
+            };
+
+            // Helper to share files
+            const tryShare = async (files: File[]): Promise<boolean> => {
+                if (navigator.canShare && navigator.canShare({ files })) {
+                    try {
+                        await navigator.share({
+                            files,
+                            title: 'Simple Drawing',
+                            text: 'Here is my drawing!'
+                        });
+                        return true;
+                    } catch (error) {
+                        if ((error as Error).name === 'AbortError') return true; // Cancelled is "handled"
+                        console.warn('Share failed:', error);
+                        return false;
+                    }
+                } else {
+                    console.warn("canShare returned false for", files.map(f => f.type));
                 }
-                // Continue to fallback if share failed (but not if user cancelled)
-                if ((error as Error).name === 'AbortError') return;
+                return false;
+            };
+
+            // 3. Tiered Execution Strategy
+
+            // Tier A: Share Combined
+            const combinedSuccess = await tryShare([jsonFile, pngFile]);
+            if (combinedSuccess) {
+                showToast("Shared successfully!");
+                return;
             }
+
+            // Tier B: Share Individually
+            console.log("Combined share failed. Trying individual...");
+
+            // B-1: JSON Priority
+            const jsonSuccess = await tryShare([jsonFile]);
+            if (jsonSuccess) {
+                showToast("JSON shared. Now trying PNG...");
+                // Try PNG separately if JSON succeeded
+                await tryShare([pngFile]);
+                return;
+            } else {
+                console.warn("JSON share failed.");
+            }
+
+            // B-2: PNG Only (if JSON share fail)
+            // Just try to save the image at least
+            if (!jsonSuccess) {
+                const pngSuccess = await tryShare([pngFile]);
+                if (pngSuccess) {
+                    showToast("PNG saved. JSON failed share.");
+                    // Since JSON failed share, try download fallback for JSON
+                    downloadFile(jsonBlob, `${filenameBase}.json`);
+                    showToast("Downloaded JSON as fallback.");
+                    return;
+                }
+            }
+
+            // Tier C: Download Fallback (All Share Failed)
+            console.log("All share attempts failed. Falling back to download.");
+            showToast("Share failed. Downloading files...");
+
+            downloadFile(jsonBlob, `${filenameBase}.json`);
+            setTimeout(() => {
+                downloadFile(pngBlob, `${filenameBase}.png`);
+            }, 500);
+
+        } catch (e) {
+            console.error("Critical Save Error:", e);
+            alert(`Error: ${(e as Error).message}`);
+            showToast("Error during save generation");
         }
+    };
 
-        // Fallback: Download both files
-        const downloadFile = (blob: Blob, filename: string) => {
-            const href = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = href;
-            link.download = filename;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            URL.revokeObjectURL(href);
+    const handleExportJson = () => {
+        const jsonData = {
+            version: 1,
+            items: items
         };
-
-        downloadFile(jsonBlob, `${filenameBase}.json`);
-        // Add small delay to ensure simple browsers handle multiple downloads better
-        setTimeout(() => {
-            downloadFile(pngBlob, `${filenameBase}.png`);
-        }, 100);
+        const jsonString = JSON.stringify(jsonData, null, 2);
+        const blob = new Blob([jsonString], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+        showToast("Opened JSON in new tab");
     };
 
     const handleOpenClick = () => {
@@ -188,28 +289,61 @@ export const DrawingCanvas: React.FC = () => {
         reader.onload = (event) => {
             try {
                 const json = event.target?.result as string;
-                const data = JSON.parse(json) as Stroke[];
-                setStrokes(data);
-                setTimeout(() => redrawAll(data), 0); // Ensure state update processes or draw immediately
+                const parseData = JSON.parse(json);
+
+                let loadedItems: DrawingElement[] | null = null;
+
+                if (parseData.version && Array.isArray(parseData.items)) {
+                    loadedItems = parseData.items;
+                } else if (Array.isArray(parseData)) {
+                    loadedItems = parseData;
+                }
+
+                if (!loadedItems) {
+                    throw new Error("Invalid file format");
+                }
+
+                // Compatibility migration
+                let newItems: DrawingElement[] = [];
+                if (loadedItems.length > 0) {
+                    const isOldFormat = Array.isArray(loadedItems[0]);
+                    if (isOldFormat) {
+                        newItems = (loadedItems as unknown as Point[][]).map(points => ({
+                            type: 'freehand',
+                            points
+                        }));
+                    } else {
+                        newItems = loadedItems as DrawingElement[];
+                    }
+                }
+
+                setItems(newItems);
+                showToast("File loaded successfully!");
             } catch (error) {
                 console.error("Failed to load drawing", error);
                 alert("Failed to load file.");
             }
         };
         reader.readAsText(file);
-        // Reset input so same file can be selected again
         e.target.value = '';
     };
+
+    const tools: { id: ToolType; label: string }[] = [
+        { id: 'freehand', label: '✎' },
+        { id: 'line', label: '／' },
+        { id: 'rect', label: '□' },
+        { id: 'circle', label: '○' },
+    ];
 
     return (
         <>
             <canvas
                 ref={canvasRef}
-                onPointerDown={startDrawing}
-                onPointerMove={draw}
-                onPointerUp={stopDrawing}
-                onPointerCancel={stopDrawing}
-                onPointerOut={stopDrawing}
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onPointerCancel={handlePointerUp}
+                onPointerOut={handlePointerUp}
                 style={{
                     touchAction: 'none',
                     display: 'block',
@@ -221,16 +355,96 @@ export const DrawingCanvas: React.FC = () => {
                     background: '#ffffff'
                 }}
             />
-            {/* Controls UI */}
+
+            {/* Toast Notification */}
+            {statusMessage && (
+                <div style={{
+                    position: 'fixed',
+                    top: '80px', // Below toolbar
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    background: 'rgba(0,0,0,0.8)',
+                    color: 'white',
+                    padding: '8px 16px',
+                    borderRadius: '20px',
+                    fontSize: '14px',
+                    pointerEvents: 'none',
+                    zIndex: 2000,
+                    transition: 'opacity 0.3s'
+                }}>
+                    {statusMessage}
+                </div>
+            )}
+
+            {/* Toolbar */}
+            <div style={{
+                position: 'fixed',
+                top: '20px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                display: 'flex',
+                gap: '10px',
+                background: 'rgba(255,255,255,0.9)',
+                padding: '10px',
+                borderRadius: '16px',
+                boxShadow: '0 2px 10px rgba(0,0,0,0.1)',
+                zIndex: 1000
+            }}>
+                {tools.map(t => (
+                    <button
+                        key={t.id}
+                        onClick={() => setCurrentTool(t.id)}
+                        style={{
+                            width: '40px',
+                            height: '40px',
+                            fontSize: '20px',
+                            borderRadius: '50%',
+                            border: 'none',
+                            background: currentTool === t.id ? '#333' : '#eee',
+                            color: currentTool === t.id ? '#fff' : '#333',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                        }}
+                    >
+                        {t.label}
+                    </button>
+                ))}
+            </div>
+
+            {/* Bottom Controls */}
             <div style={{
                 position: 'fixed',
                 bottom: '20px',
                 left: '50%',
                 transform: 'translateX(-50%)',
                 display: 'flex',
-                gap: '20px',
-                zIndex: 1000
+                gap: '12px',
+                zIndex: 1000,
+                alignItems: 'center'
             }}>
+                <button
+                    onClick={handleExportJson}
+                    title="Export JSON (Fallback)"
+                    style={{
+                        padding: '12px',
+                        fontSize: '14px',
+                        borderRadius: '50%',
+                        border: '1px solid #ccc',
+                        background: '#fff',
+                        color: '#333',
+                        boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
+                        cursor: 'pointer',
+                        width: '44px',
+                        height: '44px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                    }}
+                >
+                    JS
+                </button>
                 <button
                     onClick={handleSave}
                     style={{
