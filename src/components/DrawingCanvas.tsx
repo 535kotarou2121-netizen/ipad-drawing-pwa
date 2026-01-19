@@ -18,6 +18,7 @@ type Tool =
     | "eraser"
     | "fill"
     | "measure"
+    | "pan"
     | "resize";
 
 type ResizeHandle = "nw" | "ne" | "sw" | "se" | "t" | "b" | "l" | "r" | "start" | "end";
@@ -312,6 +313,10 @@ export default function DrawingCanvas() {
     const [fixedHeight, setFixedHeight] = useState(""); // for rect
     const [fixedDiameter, setFixedDiameter] = useState(""); // for circle
 
+    const [view, setView] = useState({ scale: 1, offsetX: 0, offsetY: 0 });
+    const pointersRef = useRef<Record<number, Point>>({});
+    const lastPinchDistRef = useRef<number | null>(null);
+
     const snapToGrid = (p: Point) => {
         if (!snapEnabled) return p;
         return {
@@ -493,20 +498,23 @@ export default function DrawingCanvas() {
         const ctx = c.getContext("2d");
         if (!ctx) return;
 
-        const { w, h } = sizeRef.current;
+        const { w, h, dpr } = sizeRef.current;
 
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, w, h);
 
         // 背景
-        ctx.save();
         ctx.fillStyle = "#d6d6d6";
         ctx.fillRect(0, 0, w, h);
-        ctx.restore();
+
+        ctx.save();
+        ctx.setTransform(dpr * view.scale, 0, 0, dpr * view.scale, view.offsetX * dpr, view.offsetY * dpr);
 
         const drawOne = (d: Drawable, isSelected: boolean) => {
             ctx.save();
             ctx.lineCap = "round";
             ctx.lineJoin = "round";
+            // ... (rest of drawOne logic remains the same inside)
 
             if (d.type === "rect" || d.type === "circle") {
                 if (d.fill) {
@@ -635,7 +643,7 @@ export default function DrawingCanvas() {
     useEffect(() => {
         redraw();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [items, draft, selectedIds, unit, mmPerPx]);
+    }, [items, draft, selectedIds, unit, mmPerPx, view]);
 
     function pickTop(p: Point) {
         for (let i = items.length - 1; i >= 0; i--) {
@@ -649,11 +657,29 @@ export default function DrawingCanvas() {
         if (!c) return;
         c.setPointerCapture(e.pointerId);
 
-        const rawP = getCanvasPoint(e, c);
-        // Freehand以外は生成時にグリッドスナップ
-        const p = (tool === "freehand" || tool === "select" || tool === "eraser" || tool === "fill" || tool === "move")
-            ? rawP
-            : snapToGrid(rawP);
+        const screenP = getCanvasPoint(e, c);
+        pointersRef.current[e.pointerId] = screenP;
+        const worldP = {
+            x: (screenP.x - view.offsetX) / view.scale,
+            y: (screenP.y - view.offsetY) / view.scale,
+        };
+
+        const ids = Object.keys(pointersRef.current);
+        if (ids.length >= 2) {
+            // Pinch zoom start (or just clear last pinch dist)
+            lastPinchDistRef.current = null;
+            return;
+        }
+
+        // 図形ツールはグリッドスナップ
+        const p = (tool === "freehand" || tool === "select" || tool === "eraser" || tool === "fill" || tool === "move" || tool === "pan")
+            ? worldP
+            : snapToGrid(worldP);
+
+        if (tool === "pan") {
+            movingRef.current = { last: screenP }; // パンはスクリーン座標の差分を使う
+            return;
+        }
 
         // Check for resize handle hit if single item selected
         if (selectedIds.length === 1 && (tool === "select" || tool === "move")) {
@@ -661,7 +687,7 @@ export default function DrawingCanvas() {
             if (selected) {
                 const handles = getResizeHandles(selected);
                 for (const h of handles) {
-                    if (dist(rawP, h) <= 12) {
+                    if (dist(worldP, h) <= 12 / view.scale) {
                         resizingRef.current = { handle: h.id, startItem: JSON.parse(JSON.stringify(selected)) };
                         return;
                     }
@@ -670,7 +696,7 @@ export default function DrawingCanvas() {
         }
 
         if (tool === "select") {
-            const clickedId = pickTop(rawP);
+            const clickedId = pickTop(worldP);
             if (isMultiSelectMode) {
                 if (clickedId) {
                     setSelectedIds(prev =>
@@ -686,7 +712,7 @@ export default function DrawingCanvas() {
         }
 
         if (tool === "fill") {
-            const id = pickTop(rawP);
+            const id = pickTop(worldP);
             const targets = (selectedIds.length > 0 && (id && selectedIds.includes(id)))
                 ? selectedIds
                 : (id ? [id] : []);
@@ -707,7 +733,7 @@ export default function DrawingCanvas() {
         }
 
         if (tool === "eraser") {
-            const id = pickTop(rawP);
+            const id = pickTop(worldP);
             const targets = (selectedIds.length > 0 && (id && selectedIds.includes(id)))
                 ? selectedIds
                 : (id ? [id] : []);
@@ -724,13 +750,13 @@ export default function DrawingCanvas() {
         }
 
         if (tool === "move") {
-            const id = pickTop(rawP);
+            const id = pickTop(worldP);
             if (id && !selectedIds.includes(id)) {
                 setSelectedIds([id]);
             } else if (!id && selectedIds.length === 0) {
                 return;
             }
-            movingRef.current = { last: rawP };
+            movingRef.current = { last: worldP };
             return;
         }
 
@@ -738,7 +764,7 @@ export default function DrawingCanvas() {
             setDraft({
                 id: uid(),
                 type: "freehand",
-                points: [rawP], // Freehandは生の座標
+                points: [worldP],
                 stroke,
                 width: lineWidth,
             });
@@ -788,18 +814,61 @@ export default function DrawingCanvas() {
     function onPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
         const c = canvasRef.current;
         if (!c) return;
-        const rawP = getCanvasPoint(e, c);
+
+        const screenP = getCanvasPoint(e, c);
+        pointersRef.current[e.pointerId] = screenP;
+
+        const ids = Object.keys(pointersRef.current).map(Number);
+        if (ids.length >= 2) {
+            const p1 = pointersRef.current[ids[0]];
+            const p2 = pointersRef.current[ids[1]];
+            const d = dist(p1, p2);
+            const center = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+
+            if (lastPinchDistRef.current !== null) {
+                const deltaScale = d / lastPinchDistRef.current;
+                const nextScale = Math.min(3.0, Math.max(0.5, view.scale * deltaScale));
+
+                // センターを中心にズームするためのオフセット調整
+                const worldCenter = {
+                    x: (center.x - view.offsetX) / view.scale,
+                    y: (center.y - view.offsetY) / view.scale
+                };
+
+                setView(() => ({
+                    scale: nextScale,
+                    offsetX: center.x - worldCenter.x * nextScale,
+                    offsetY: center.y - worldCenter.y * nextScale,
+                }));
+            }
+            lastPinchDistRef.current = d;
+            return;
+        }
+
+        const worldP = {
+            x: (screenP.x - view.offsetX) / view.scale,
+            y: (screenP.y - view.offsetY) / view.scale,
+        };
+
+        if (tool === "pan") {
+            const mv = movingRef.current;
+            if (!mv) return;
+            const dx = screenP.x - mv.last.x;
+            const dy = screenP.y - mv.last.y;
+            mv.last = screenP;
+            setView(prev => ({ ...prev, offsetX: prev.offsetX + dx, offsetY: prev.offsetY + dy }));
+            return;
+        }
 
         if (tool === "move") {
             const mv = movingRef.current;
             const rs = resizingRef.current;
 
             if (rs) {
-                let p = snapToGrid(rawP);
-
+                let p = snapToGrid(worldP);
+                // ... (resize logic same with worldP)
                 setItems((prev) => prev.map((it) => {
                     if (!selectedIds.includes(it.id)) return it;
-
                     if (it.type === "rect") {
                         const start = rs.startItem as typeof it;
                         let { x, y, w, h } = start;
@@ -825,27 +894,24 @@ export default function DrawingCanvas() {
                         }
                         return { ...it, x, y, w, h };
                     }
-
                     if (it.type === "circle") {
                         const start = rs.startItem as typeof it;
                         const newR = dist({ x: start.cx, y: start.cy }, p);
                         return { ...it, r: newR };
                     }
-
                     if (it.type === "line" || it.type === "arrow" || it.type === "measure") {
                         if (rs.handle === "start") return { ...it, start: p };
                         if (rs.handle === "end") return { ...it, end: p };
                     }
-
                     return it;
                 }));
                 return;
             }
 
             if (!mv || selectedIds.length === 0) return;
-            const dx = rawP.x - mv.last.x;
-            const dy = rawP.y - mv.last.y;
-            mv.last = rawP;
+            const dx = worldP.x - mv.last.x;
+            const dy = worldP.y - mv.last.y;
+            mv.last = worldP;
 
             setItems((prev) => prev.map((it) => (selectedIds.includes(it.id) ? translateDrawable(it, dx, dy) : it)));
             return;
@@ -854,28 +920,20 @@ export default function DrawingCanvas() {
         if (!draft) return;
 
         if (draft.type === "freehand") {
-            setDraft({ ...draft, points: [...draft.points, rawP] });
+            setDraft({ ...draft, points: [...draft.points, worldP] });
             return;
         }
 
-        // 図形ツールはグリッドスナップ
-        let p = snapToGrid(rawP);
+        let p = snapToGrid(worldP);
 
         if (draft.type === "line" || draft.type === "arrow" || draft.type === "measure") {
-            // アングルスナップ適用
             p = snapAngle(draft.start, p);
-
-            // 数値指定があれば長さを固定
             if (fixedLength && Number(fixedLength) > 0) {
                 const lenMm = Number(fixedLength);
                 const lenPx = lenMm / mmPerPx;
                 const angle = Math.atan2(p.y - draft.start.y, p.x - draft.start.x);
-                p = {
-                    x: draft.start.x + Math.cos(angle) * lenPx,
-                    y: draft.start.y + Math.sin(angle) * lenPx,
-                };
+                p = { x: draft.start.x + Math.cos(angle) * lenPx, y: draft.start.y + Math.sin(angle) * lenPx };
             }
-
             setDraft({ ...draft, end: p });
             return;
         }
@@ -883,8 +941,6 @@ export default function DrawingCanvas() {
         if (draft.type === "rect") {
             let w = p.x - draft.x;
             let h = p.y - draft.y;
-
-            // 数値指定があればサイズ固定（ドラッグ方向は考慮）
             if (fixedWidth && Number(fixedWidth) > 0) {
                 const wPx = Number(fixedWidth) / mmPerPx;
                 w = (w >= 0 ? 1 : -1) * wPx;
@@ -893,9 +949,6 @@ export default function DrawingCanvas() {
                 const hPx = Number(fixedHeight) / mmPerPx;
                 h = (h >= 0 ? 1 : -1) * hPx;
             }
-
-            // 軸スナップ（高さ/幅が極端に小さい場合、0にして直線化するなど）は
-            // グリッドスナップがあればある程度自然にできるため、今回はGrid任せにする
             const r = clampRect(draft.x, draft.y, w, h);
             setDraft({ ...draft, ...r });
             return;
@@ -903,14 +956,11 @@ export default function DrawingCanvas() {
 
         if (draft.type === "circle") {
             let r = dist({ x: draft.cx, y: draft.cy }, p);
-
-            // 数値指定（直径）があれば半径固定
             if (fixedDiameter && Number(fixedDiameter) > 0) {
                 const dMm = Number(fixedDiameter);
                 const dPx = dMm / mmPerPx;
                 r = dPx / 2;
             }
-
             setDraft({ ...draft, r });
             return;
         }
@@ -920,9 +970,14 @@ export default function DrawingCanvas() {
         const c = canvasRef.current;
         if (!c) return;
         c.releasePointerCapture(e.pointerId);
+        delete pointersRef.current[e.pointerId];
+
+        if (Object.keys(pointersRef.current).length < 2) {
+            lastPinchDistRef.current = null;
+        }
 
         if (movingRef.current || resizingRef.current) {
-            pushHistory(items, selectedIds);
+            if (tool !== "pan") pushHistory(items, selectedIds);
             movingRef.current = null;
             resizingRef.current = null;
             return;
@@ -1072,6 +1127,7 @@ export default function DrawingCanvas() {
                         ["eraser", "消し"],
                         ["fill", "塗り"],
                         ["measure", "寸法"],
+                        ["pan", "✋"],
                     ] as const
                 ).map(([t, label]) => (
                     <button
@@ -1215,7 +1271,7 @@ export default function DrawingCanvas() {
                             type="number"
                             value={fixedDiameter}
                             onChange={(e) => setFixedDiameter(e.target.value)}
-                            onBlur={() => pushHistory(items, selectedId, { fixedDiameter })}
+                            onBlur={() => pushHistory(items, selectedIds, { fixedDiameter })}
                             placeholder="自由"
                             style={{ width: 70, padding: 4, borderRadius: 4 }}
                         />
@@ -1425,15 +1481,22 @@ export default function DrawingCanvas() {
                     style={{
                         padding: "10px 14px",
                         borderRadius: 12,
-                        border: "1px solid #e11d48",
-                        background: selectedIds.length > 0 ? "#ffe4e6" : "#ddd",
-                        color: selectedIds.length > 0 ? "#e11d48" : "#999",
+                        border: "1px solid #999",
+                        background: selectedIds.length > 0 ? "#fee2e2" : "#ddd",
+                        color: selectedIds.length > 0 ? "#ef4444" : "#000",
                         opacity: selectedIds.length > 0 ? 1 : 0.5,
                         cursor: selectedIds.length > 0 ? "pointer" : "default",
                     }}
                 >
                     Delete Selected
                 </button>
+
+                <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center", background: "#f3f4f6", padding: "4px 8px", borderRadius: 8, border: "1px solid #ccc" }}>
+                    <span style={{ fontSize: "0.9rem", fontWeight: "bold" }}>{Math.round(view.scale * 100)}%</span>
+                    <button onClick={() => setView(v => ({ ...v, scale: Math.max(0.5, v.scale - 0.1) }))} style={{ padding: "4px 8px", borderRadius: 4, background: "#fff", border: "1px solid #999" }}>-</button>
+                    <button onClick={() => setView(v => ({ ...v, scale: Math.min(3.0, v.scale + 0.1) }))} style={{ padding: "4px 8px", borderRadius: 4, background: "#fff", border: "1px solid #999" }}>+</button>
+                    <button onClick={() => setView({ scale: 1, offsetX: 0, offsetY: 0 })} style={{ padding: "4px 8px", borderRadius: 4, background: "#fff", border: "1px solid #999" }}>Reset</button>
+                </div>
 
                 <input
                     ref={fileInputRef}
