@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 
 type Snapshot = {
     items: Drawable[];
-    selectedId: string | null;
+    selectedIds: string[];
     settings: AppSettings;
 };
 type Point = { x: number; y: number };
@@ -290,7 +290,8 @@ export default function DrawingCanvas() {
     const [fillColor, setFillColor] = useState("#c7d2fe");
 
     const [items, setItems] = useState<Drawable[]>([]);
-    const [selectedId, setSelectedId] = useState<string | null>(null);
+    const [selectedIds, setSelectedIds] = useState<string[]>([]);
+    const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
     const [draft, setDraft] = useState<Drawable | null>(null);
 
     // History
@@ -333,10 +334,10 @@ export default function DrawingCanvas() {
         };
     };
 
-    const pushHistory = (nextItems: Drawable[], nextSelectedId: string | null, settingsOverride?: Partial<AppSettings>) => {
+    const pushHistory = (nextItems: Drawable[], nextSelectedIds: string[], settingsOverride?: Partial<AppSettings>) => {
         const newSnapshot: Snapshot = {
             items: nextItems,
-            selectedId: nextSelectedId,
+            selectedIds: nextSelectedIds,
             settings: {
                 unit,
                 gridSize,
@@ -366,7 +367,7 @@ export default function DrawingCanvas() {
         setHistoryIndex(nextIndex);
         const snap = history[nextIndex];
         setItems(snap.items);
-        setSelectedId(snap.selectedId);
+        setSelectedIds(snap.selectedIds);
         setUnit(snap.settings.unit);
         setGridSize(snap.settings.gridSize);
         setMmPerPx(snap.settings.mmPerPx);
@@ -383,7 +384,7 @@ export default function DrawingCanvas() {
         setHistoryIndex(nextIndex);
         const snap = history[nextIndex];
         setItems(snap.items);
-        setSelectedId(snap.selectedId);
+        setSelectedIds(snap.selectedIds);
         setUnit(snap.settings.unit);
         setGridSize(snap.settings.gridSize);
         setMmPerPx(snap.settings.mmPerPx);
@@ -399,7 +400,7 @@ export default function DrawingCanvas() {
         if (history.length === 0) {
             setHistory([{
                 items: [],
-                selectedId: null,
+                selectedIds: [],
                 settings: { unit: "mm", gridSize: 10, mmPerPx: 1, snapEnabled: true }
             }]);
             setHistoryIndex(0);
@@ -411,18 +412,34 @@ export default function DrawingCanvas() {
     const resizingRef = useRef<{ handle: ResizeHandle; startItem: Drawable } | null>(null);
 
     const duplicateSelected = () => {
-        if (!selectedId) return;
-        const item = items.find((it) => it.id === selectedId);
-        if (!item) return;
+        if (selectedIds.length === 0) return;
 
-        const newItem = JSON.parse(JSON.stringify(item));
-        newItem.id = uid();
-        const translated = translateDrawable(newItem, 10, 10);
+        const newClones: Drawable[] = [];
+        const nextSelectedIds: string[] = [];
 
-        const nextItems = [...items, translated];
+        for (const id of selectedIds) {
+            const item = items.find((it) => it.id === id);
+            if (!item) continue;
+
+            const newItem = JSON.parse(JSON.stringify(item));
+            newItem.id = uid();
+            const translated = translateDrawable(newItem, 10, 10);
+            newClones.push(translated);
+            nextSelectedIds.push(translated.id);
+        }
+
+        const nextItems = [...items, ...newClones];
         setItems(nextItems);
-        setSelectedId(translated.id);
-        pushHistory(nextItems, translated.id);
+        setSelectedIds(nextSelectedIds);
+        pushHistory(nextItems, nextSelectedIds);
+    };
+
+    const deleteSelected = () => {
+        if (selectedIds.length === 0) return;
+        const nextItems = items.filter((it) => !selectedIds.includes(it.id));
+        setItems(nextItems);
+        setSelectedIds([]);
+        pushHistory(nextItems, []);
     };
 
     // Keyboard Shortcuts
@@ -432,10 +449,15 @@ export default function DrawingCanvas() {
                 e.preventDefault();
                 duplicateSelected();
             }
+            if (e.key === "Backspace" || e.key === "Delete") {
+                if (document.activeElement?.tagName !== "INPUT") {
+                    deleteSelected();
+                }
+            }
         };
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [items, selectedId]);
+    }, [items, selectedIds]);
 
 
 
@@ -589,14 +611,31 @@ export default function DrawingCanvas() {
             ctx.restore();
         };
 
-        for (const it of items) drawOne(it, it.id === selectedId);
+        for (const it of items) drawOne(it, selectedIds.includes(it.id));
         if (draft) drawOne(draft, false);
+
+        // 複数選択時のグループ枠
+        if (selectedIds.length > 1) {
+            const selectedItems = items.filter(it => selectedIds.includes(it.id));
+            const bounds = selectedItems.map(getBounds);
+            const minX = Math.min(...bounds.map(b => b.x));
+            const minY = Math.min(...bounds.map(b => b.y));
+            const maxX = Math.max(...bounds.map(b => b.x + b.w));
+            const maxY = Math.max(...bounds.map(b => b.y + b.h));
+
+            ctx.save();
+            ctx.strokeStyle = "rgba(37, 99, 235, 0.5)";
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]);
+            ctx.strokeRect(minX - 10, minY - 10, (maxX - minX) + 20, (maxY - minY) + 20);
+            ctx.restore();
+        }
     }
 
     useEffect(() => {
         redraw();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [items, draft, selectedId, unit, mmPerPx]);
+    }, [items, draft, selectedIds, unit, mmPerPx]);
 
     function pickTop(p: Point) {
         for (let i = items.length - 1; i >= 0; i--) {
@@ -616,9 +655,9 @@ export default function DrawingCanvas() {
             ? rawP
             : snapToGrid(rawP);
 
-        // Check for resize handle hit if selectedId exists
-        if (selectedId && (tool === "select" || tool === "move")) {
-            const selected = items.find(it => it.id === selectedId);
+        // Check for resize handle hit if single item selected
+        if (selectedIds.length === 1 && (tool === "select" || tool === "move")) {
+            const selected = items.find(it => it.id === selectedIds[0]);
             if (selected) {
                 const handles = getResizeHandles(selected);
                 for (const h of handles) {
@@ -631,43 +670,67 @@ export default function DrawingCanvas() {
         }
 
         if (tool === "select") {
-            setSelectedId(pickTop(rawP)); // 選択は見た目通りの位置で
+            const clickedId = pickTop(rawP);
+            if (isMultiSelectMode) {
+                if (clickedId) {
+                    setSelectedIds(prev =>
+                        prev.includes(clickedId)
+                            ? prev.filter(id => id !== clickedId)
+                            : [...prev, clickedId]
+                    );
+                }
+            } else {
+                setSelectedIds(clickedId ? [clickedId] : []);
+            }
             return;
         }
 
         if (tool === "fill") {
             const id = pickTop(rawP);
-            if (!id) return;
+            const targets = (selectedIds.length > 0 && (id && selectedIds.includes(id)))
+                ? selectedIds
+                : (id ? [id] : []);
+
+            if (targets.length === 0) return;
+
             setItems((prev) => {
                 const next = prev.map((it) => {
-                    if (it.id !== id) return it;
+                    if (!targets.includes(it.id)) return it;
                     if (it.type === "rect" || it.type === "circle") return { ...it, fill: fillColor };
                     return it;
                 });
-                pushHistory(next, id);
+                pushHistory(next, targets);
                 return next;
             });
-            setSelectedId(id);
+            setSelectedIds(targets);
             return;
         }
 
         if (tool === "eraser") {
             const id = pickTop(rawP);
-            if (!id) return;
+            const targets = (selectedIds.length > 0 && (id && selectedIds.includes(id)))
+                ? selectedIds
+                : (id ? [id] : []);
+
+            if (targets.length === 0) return;
+
             setItems((prev) => {
-                const next = prev.filter((it) => it.id !== id);
-                pushHistory(next, selectedId === id ? null : selectedId);
+                const next = prev.filter((it) => !targets.includes(it.id));
+                pushHistory(next, []);
                 return next;
             });
-            if (selectedId === id) setSelectedId(null);
+            setSelectedIds([]);
             return;
         }
 
         if (tool === "move") {
-            const id = selectedId ?? pickTop(rawP);
-            setSelectedId(id);
-            if (!id) return;
-            movingRef.current = { last: rawP }; // Move開始点は生の座標で取る（相対移動のため）
+            const id = pickTop(rawP);
+            if (id && !selectedIds.includes(id)) {
+                setSelectedIds([id]);
+            } else if (!id && selectedIds.length === 0) {
+                return;
+            }
+            movingRef.current = { last: rawP };
             return;
         }
 
@@ -735,7 +798,7 @@ export default function DrawingCanvas() {
                 let p = snapToGrid(rawP);
 
                 setItems((prev) => prev.map((it) => {
-                    if (it.id !== selectedId) return it;
+                    if (!selectedIds.includes(it.id)) return it;
 
                     if (it.type === "rect") {
                         const start = rs.startItem as typeof it;
@@ -779,12 +842,12 @@ export default function DrawingCanvas() {
                 return;
             }
 
-            if (!mv || !selectedId) return;
+            if (!mv || selectedIds.length === 0) return;
             const dx = rawP.x - mv.last.x;
             const dy = rawP.y - mv.last.y;
             mv.last = rawP;
 
-            setItems((prev) => prev.map((it) => (it.id === selectedId ? translateDrawable(it, dx, dy) : it)));
+            setItems((prev) => prev.map((it) => (selectedIds.includes(it.id) ? translateDrawable(it, dx, dy) : it)));
             return;
         }
 
@@ -858,26 +921,12 @@ export default function DrawingCanvas() {
         if (!c) return;
         c.releasePointerCapture(e.pointerId);
 
-        // Resize確定時に履歴追加
-        if (resizingRef.current) {
-            setItems(prev => {
-                pushHistory(prev, selectedId);
-                return prev;
-            });
+        if (movingRef.current || resizingRef.current) {
+            pushHistory(items, selectedIds);
+            movingRef.current = null;
+            resizingRef.current = null;
+            return;
         }
-        resizingRef.current = null;
-
-        // Move確定時に履歴追加
-        if (movingRef.current) {
-            // Move変更はonPointerMoveですでに行われているため、現在のitemsを履歴に積む
-            // setItemsのコールバックを使って最新のitemsを確実に取得する
-            setItems(prev => {
-                pushHistory(prev, selectedId);
-                return prev;
-            });
-        }
-
-        movingRef.current = null;
 
         if (!draft) return;
 
@@ -892,10 +941,10 @@ export default function DrawingCanvas() {
         if (shouldKeep) {
             setItems((prev) => {
                 const next = [...prev, draft];
-                pushHistory(next, draft.id);
+                pushHistory(next, [draft.id]);
                 return next;
             });
-            setSelectedId(draft.id);
+            setSelectedIds([draft.id]);
         }
 
         setDraft(null);
@@ -981,14 +1030,11 @@ export default function DrawingCanvas() {
                 setFixedHeight(newSettings.fixedHeight || "");
                 setFixedDiameter(newSettings.fixedDiameter || "");
             }
-            setSelectedId(null);
+            setSelectedIds([]);
             setDraft(null);
 
             // JSON読み込み履歴追加 (初期化に近いが履歴として積む)
-            // state更新後に積むため（ここでは同期的に呼んで問題ないが、念のためsetTimeout等は使わず直接呼ぶ）
-            // ただしsetItemsは非同期なので、useEffect等で検知するか、あるいはここで明示的に積む必要がある
-            // ここでは推移として「読み込み」扱いにする
-            pushHistory(parsed.items, null, newSettings);
+            pushHistory(parsed.items, [], newSettings);
         } catch (err) {
             alert("Failed to open JSON");
         } finally {
@@ -1000,11 +1046,11 @@ export default function DrawingCanvas() {
     function resetProject() {
         if (!confirm("現在の作業内容をすべて消去しますか？")) return;
         setItems([]);
-        setSelectedId(null);
+        setSelectedIds([]);
         setDraft(null);
         setHistory([{
             items: [],
-            selectedId: null,
+            selectedIds: [],
             settings: { unit: "mm", gridSize: 10, mmPerPx: 1, snapEnabled: true }
         }]);
         setHistoryIndex(0);
@@ -1043,6 +1089,25 @@ export default function DrawingCanvas() {
                 ))}
 
                 <div style={{ marginLeft: 8, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <label
+                        style={{
+                            display: "flex",
+                            gap: 6,
+                            alignItems: "center",
+                            background: isMultiSelectMode ? "#dbeafe" : "#f3f4f6",
+                            padding: "4px 8px",
+                            borderRadius: 8,
+                            border: isMultiSelectMode ? "1px solid #3b82f6" : "1px solid #999",
+                            cursor: "pointer"
+                        }}
+                    >
+                        <input
+                            type="checkbox"
+                            checked={isMultiSelectMode}
+                            onChange={(e) => setIsMultiSelectMode(e.target.checked)}
+                        />
+                        Add Select
+                    </label>
                     <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
                         <input
                             type="checkbox"
@@ -1050,7 +1115,7 @@ export default function DrawingCanvas() {
                             onChange={(e) => {
                                 const val = e.target.checked;
                                 setSnapEnabled(val);
-                                pushHistory(items, selectedId, { snapEnabled: val });
+                                pushHistory(items, selectedIds, { snapEnabled: val });
                             }}
                         />
                         Snap
@@ -1062,7 +1127,7 @@ export default function DrawingCanvas() {
                             type="number"
                             value={mmPerPx}
                             onChange={(e) => setMmPerPx(Number(e.target.value))}
-                            onBlur={(e) => pushHistory(items, selectedId, { mmPerPx: Number(e.target.value) })}
+                            onBlur={(e) => pushHistory(items, selectedIds, { mmPerPx: Number(e.target.value) })}
                             style={{ width: 60, padding: 4, borderRadius: 4 }}
                             step={0.1}
                         />
@@ -1073,7 +1138,7 @@ export default function DrawingCanvas() {
                         onChange={(e) => {
                             const val = e.target.value as any;
                             setUnit(val);
-                            pushHistory(items, selectedId, { unit: val });
+                            pushHistory(items, selectedIds, { unit: val });
                         }}
                         style={{ padding: "4px", borderRadius: 4 }}
                     >
@@ -1111,7 +1176,7 @@ export default function DrawingCanvas() {
                             type="number"
                             value={fixedLength}
                             onChange={(e) => setFixedLength(e.target.value)}
-                            onBlur={() => pushHistory(items, selectedId, { fixedLength })}
+                            onBlur={() => pushHistory(items, selectedIds, { fixedLength })}
                             placeholder="自由"
                             style={{ width: 70, padding: 4, borderRadius: 4 }}
                         />
@@ -1125,7 +1190,7 @@ export default function DrawingCanvas() {
                                 type="number"
                                 value={fixedWidth}
                                 onChange={(e) => setFixedWidth(e.target.value)}
-                                onBlur={() => pushHistory(items, selectedId, { fixedWidth })}
+                                onBlur={() => pushHistory(items, selectedIds, { fixedWidth })}
                                 placeholder="自由"
                                 style={{ width: 70, padding: 4, borderRadius: 4 }}
                             />
@@ -1136,7 +1201,7 @@ export default function DrawingCanvas() {
                                 type="number"
                                 value={fixedHeight}
                                 onChange={(e) => setFixedHeight(e.target.value)}
-                                onBlur={() => pushHistory(items, selectedId, { fixedHeight })}
+                                onBlur={() => pushHistory(items, selectedIds, { fixedHeight })}
                                 placeholder="自由"
                                 style={{ width: 70, padding: 4, borderRadius: 4 }}
                             />
@@ -1159,11 +1224,11 @@ export default function DrawingCanvas() {
             </div>
 
             {/* 選択中の図形の数値編集UI */}
-            {selectedId && (
+            {selectedIds.length === 1 && (
                 <div style={{ display: "flex", gap: 12, alignItems: "center", padding: "8px 12px", background: "#fef9c3", borderRadius: 12, border: "1px solid #fde047" }}>
                     <span style={{ fontSize: "0.9rem", fontWeight: "bold" }}>選択中:</span>
-                    {items.find(it => it.id === selectedId)?.type === "rect" && (() => {
-                        const it = items.find(it => it.id === selectedId) as any;
+                    {items.find(it => it.id === selectedIds[0])?.type === "rect" && (() => {
+                        const it = items.find(it => it.id === selectedIds[0]) as any;
                         const wVal = (it.w * mmPerPx).toFixed(1);
                         const hVal = (it.h * mmPerPx).toFixed(1);
                         return (
@@ -1176,8 +1241,8 @@ export default function DrawingCanvas() {
                                         onBlur={(e) => {
                                             const val = Number(e.target.value) / mmPerPx;
                                             setItems(prev => {
-                                                const next = prev.map(item => item.id === selectedId && item.type === "rect" ? { ...item, w: val } : item);
-                                                pushHistory(next, selectedId);
+                                                const next = prev.map(item => item.id === selectedIds[0] && item.type === "rect" ? { ...item, w: val } : item);
+                                                pushHistory(next, selectedIds);
                                                 return next;
                                             });
                                         }}
@@ -1192,8 +1257,8 @@ export default function DrawingCanvas() {
                                         onBlur={(e) => {
                                             const val = Number(e.target.value) / mmPerPx;
                                             setItems(prev => {
-                                                const next = prev.map(item => item.id === selectedId && item.type === "rect" ? { ...item, h: val } : item);
-                                                pushHistory(next, selectedId);
+                                                const next = prev.map(item => item.id === selectedIds[0] && item.type === "rect" ? { ...item, h: val } : item);
+                                                pushHistory(next, selectedIds);
                                                 return next;
                                             });
                                         }}
@@ -1203,8 +1268,8 @@ export default function DrawingCanvas() {
                             </>
                         );
                     })()}
-                    {items.find(it => it.id === selectedId)?.type === "circle" && (() => {
-                        const it = items.find(it => it.id === selectedId) as any;
+                    {items.find(it => it.id === selectedIds[0])?.type === "circle" && (() => {
+                        const it = items.find(it => it.id === selectedIds[0]) as any;
                         const dVal = (it.r * 2 * mmPerPx).toFixed(1);
                         return (
                             <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
@@ -1215,8 +1280,8 @@ export default function DrawingCanvas() {
                                     onBlur={(e) => {
                                         const val = (Number(e.target.value) / 2) / mmPerPx;
                                         setItems(prev => {
-                                            const next = prev.map(item => item.id === selectedId && item.type === "circle" ? { ...item, r: val } : item);
-                                            pushHistory(next, selectedId);
+                                            const next = prev.map(item => item.id === selectedIds[0] && item.type === "circle" ? { ...item, r: val } : item);
+                                            pushHistory(next, selectedIds);
                                             return next;
                                         });
                                     }}
@@ -1225,8 +1290,8 @@ export default function DrawingCanvas() {
                             </label>
                         );
                     })()}
-                    {(["line", "arrow", "measure"].includes(items.find(it => it.id === selectedId)?.type || "")) && (() => {
-                        const it = items.find(it => it.id === selectedId) as any;
+                    {(["line", "arrow", "measure"].includes(items.find(it => it.id === selectedIds[0])?.type || "")) && (() => {
+                        const it = items.find(it => it.id === selectedIds[0]) as any;
                         const lenVal = (dist(it.start, it.end) * mmPerPx).toFixed(1);
                         return (
                             <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
@@ -1238,7 +1303,7 @@ export default function DrawingCanvas() {
                                         const nextLen = Number(e.target.value) / mmPerPx;
                                         setItems(prev => {
                                             const next = prev.map(item => {
-                                                if (item.id !== selectedId || !("start" in item && "end" in item)) return item;
+                                                if (item.id !== selectedIds[0] || !("start" in item && "end" in item)) return item;
                                                 const d = dist(item.start, item.end);
                                                 if (d === 0) return { ...item, end: { x: item.start.x + nextLen, y: item.start.y } };
                                                 const ratio = nextLen / d;
@@ -1250,7 +1315,7 @@ export default function DrawingCanvas() {
                                                     }
                                                 };
                                             });
-                                            pushHistory(next, selectedId);
+                                            pushHistory(next, selectedIds);
                                             return next;
                                         });
                                     }}
@@ -1342,17 +1407,32 @@ export default function DrawingCanvas() {
                 <div style={{ width: 1, height: 24, background: "#ccc", margin: "0 8px" }} />
                 <button
                     onClick={duplicateSelected}
-                    disabled={!selectedId}
+                    disabled={selectedIds.length === 0}
                     style={{
                         padding: "10px 14px",
                         borderRadius: 12,
                         border: "1px solid #999",
-                        background: selectedId ? "#fff" : "#ddd",
-                        opacity: selectedId ? 1 : 0.5,
-                        cursor: selectedId ? "pointer" : "default",
+                        background: selectedIds.length > 0 ? "#fff" : "#ddd",
+                        opacity: selectedIds.length > 0 ? 1 : 0.5,
+                        cursor: selectedIds.length > 0 ? "pointer" : "default",
                     }}
                 >
                     Duplicate
+                </button>
+                <button
+                    onClick={deleteSelected}
+                    disabled={selectedIds.length === 0}
+                    style={{
+                        padding: "10px 14px",
+                        borderRadius: 12,
+                        border: "1px solid #e11d48",
+                        background: selectedIds.length > 0 ? "#ffe4e6" : "#ddd",
+                        color: selectedIds.length > 0 ? "#e11d48" : "#999",
+                        opacity: selectedIds.length > 0 ? 1 : 0.5,
+                        cursor: selectedIds.length > 0 ? "pointer" : "default",
+                    }}
+                >
+                    Delete Selected
                 </button>
 
                 <input
