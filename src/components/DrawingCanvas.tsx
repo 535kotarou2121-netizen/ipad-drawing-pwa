@@ -247,6 +247,8 @@ type AppSettings = {
     fixedWidth?: string;
     fixedHeight?: string;
     fixedDiameter?: string;
+    angleSnapEnabled: boolean;
+    fixedAngle: string;
 };
 
 type SavePayload = {
@@ -312,6 +314,8 @@ export default function DrawingCanvas() {
     const [fixedWidth, setFixedWidth] = useState("");   // for rect
     const [fixedHeight, setFixedHeight] = useState(""); // for rect
     const [fixedDiameter, setFixedDiameter] = useState(""); // for circle
+    const [angleSnapEnabled, setAngleSnapEnabled] = useState(true);
+    const [fixedAngle, setFixedAngle] = useState(""); // deg
 
     const [view, setView] = useState({ scale: 1, offsetX: 0, offsetY: 0 });
     const pointersRef = useRef<Record<number, Point>>({});
@@ -352,6 +356,8 @@ export default function DrawingCanvas() {
                 fixedWidth,
                 fixedHeight,
                 fixedDiameter,
+                angleSnapEnabled,
+                fixedAngle,
                 ...settingsOverride
             }
         };
@@ -381,6 +387,8 @@ export default function DrawingCanvas() {
         setFixedWidth(snap.settings.fixedWidth || "");
         setFixedHeight(snap.settings.fixedHeight || "");
         setFixedDiameter(snap.settings.fixedDiameter || "");
+        setAngleSnapEnabled(snap.settings.angleSnapEnabled !== false);
+        setFixedAngle(snap.settings.fixedAngle || "");
     };
 
     const redo = () => {
@@ -398,6 +406,8 @@ export default function DrawingCanvas() {
         setFixedWidth(snap.settings.fixedWidth || "");
         setFixedHeight(snap.settings.fixedHeight || "");
         setFixedDiameter(snap.settings.fixedDiameter || "");
+        setAngleSnapEnabled(snap.settings.angleSnapEnabled !== false);
+        setFixedAngle(snap.settings.fixedAngle || "");
     };
 
     // Initial History
@@ -406,7 +416,7 @@ export default function DrawingCanvas() {
             setHistory([{
                 items: [],
                 selectedIds: [],
-                settings: { unit: "mm", gridSize: 10, mmPerPx: 1, snapEnabled: true }
+                settings: { unit: "mm", gridSize: 10, mmPerPx: 1, snapEnabled: true, angleSnapEnabled: true, fixedAngle: "" }
             }]);
             setHistoryIndex(0);
         }
@@ -590,6 +600,18 @@ export default function DrawingCanvas() {
                 ctx.beginPath();
                 ctx.arc(d.cx, d.cy, d.r, 0, Math.PI * 2);
                 ctx.stroke();
+            }
+
+            // Draw angle label for line/arrow draft
+            if (!isSelected && d === draft && (d.type === "line" || d.type === "arrow")) {
+                const angleRad = Math.atan2(d.end.y - d.start.y, d.end.x - d.start.x);
+                const angleDeg = (angleRad * 180) / Math.PI;
+                const text = `${angleDeg.toFixed(1)}°`;
+                ctx.save();
+                ctx.fillStyle = "#ef4444";
+                ctx.font = "12px sans-serif";
+                ctx.fillText(text, d.end.x + 10, d.end.y + 10);
+                ctx.restore();
             }
 
             if (isSelected) {
@@ -927,14 +949,48 @@ export default function DrawingCanvas() {
         let p = snapToGrid(worldP);
 
         if (draft.type === "line" || draft.type === "arrow" || draft.type === "measure") {
-            p = snapAngle(draft.start, p);
-            if (fixedLength && Number(fixedLength) > 0) {
-                const lenMm = Number(fixedLength);
-                const lenPx = lenMm / mmPerPx;
-                const angle = Math.atan2(p.y - draft.start.y, p.x - draft.start.x);
-                p = { x: draft.start.x + Math.cos(angle) * lenPx, y: draft.start.y + Math.sin(angle) * lenPx };
+            const isPrecision = draft.type === "line" || draft.type === "arrow";
+            let finalP = p;
+
+            if (isPrecision && fixedAngle !== "" && !isNaN(Number(fixedAngle))) {
+                // (A) 角度入力がある
+                const deg = Number(fixedAngle);
+                const rad = (deg * Math.PI) / 180;
+                let lenPx = dist(draft.start, worldP);
+                if (fixedLength && Number(fixedLength) > 0) {
+                    lenPx = Number(fixedLength) / mmPerPx;
+                }
+                finalP = {
+                    x: draft.start.x + Math.cos(rad) * lenPx,
+                    y: draft.start.y + Math.sin(rad) * lenPx
+                };
+            } else if (isPrecision && angleSnapEnabled) {
+                // (B) Angle Snap ON
+                finalP = snapAngle(draft.start, p);
+                if (fixedLength && Number(fixedLength) > 0) {
+                    const lenPx = Number(fixedLength) / mmPerPx;
+                    const angle = Math.atan2(finalP.y - draft.start.y, finalP.x - draft.start.x);
+                    finalP = { x: draft.start.x + Math.cos(angle) * lenPx, y: draft.start.y + Math.sin(angle) * lenPx };
+                }
+            } else if (isPrecision && !angleSnapEnabled) {
+                // (C) Angle Snap OFF (完全に自由角度)
+                finalP = worldP;
+                if (fixedLength && Number(fixedLength) > 0) {
+                    const lenPx = Number(fixedLength) / mmPerPx;
+                    const angle = Math.atan2(finalP.y - draft.start.y, finalP.x - draft.start.x);
+                    finalP = { x: draft.start.x + Math.cos(angle) * lenPx, y: draft.start.y + Math.sin(angle) * lenPx };
+                }
+            } else if (draft.type === "measure") {
+                // 寸法ツールは常にSnapAngle (既存挙動維持)
+                finalP = snapAngle(draft.start, p);
+                if (fixedLength && Number(fixedLength) > 0) {
+                    const lenPx = Number(fixedLength) / mmPerPx;
+                    const angle = Math.atan2(finalP.y - draft.start.y, finalP.x - draft.start.x);
+                    finalP = { x: draft.start.x + Math.cos(angle) * lenPx, y: draft.start.y + Math.sin(angle) * lenPx };
+                }
             }
-            setDraft({ ...draft, end: p });
+
+            setDraft({ ...draft, end: finalP });
             return;
         }
 
@@ -1018,6 +1074,8 @@ export default function DrawingCanvas() {
                 fixedWidth,
                 fixedHeight,
                 fixedDiameter,
+                angleSnapEnabled,
+                fixedAngle,
             },
             meta: { createdAt: new Date().toISOString() },
         };
@@ -1059,7 +1117,7 @@ export default function DrawingCanvas() {
             }
 
             setItems(parsed.items);
-            let newSettings: AppSettings = { unit, gridSize, mmPerPx, snapEnabled };
+            let newSettings: AppSettings = { unit, gridSize, mmPerPx, snapEnabled, angleSnapEnabled, fixedAngle };
             if (parsed.settings) {
                 setUnit(parsed.settings.unit);
                 setGridSize(parsed.settings.gridSize);
@@ -1084,6 +1142,8 @@ export default function DrawingCanvas() {
                 setFixedWidth(newSettings.fixedWidth || "");
                 setFixedHeight(newSettings.fixedHeight || "");
                 setFixedDiameter(newSettings.fixedDiameter || "");
+                setAngleSnapEnabled(newSettings.angleSnapEnabled !== false);
+                setFixedAngle(newSettings.fixedAngle || "");
             }
             setSelectedIds([]);
             setDraft(null);
@@ -1106,7 +1166,7 @@ export default function DrawingCanvas() {
         setHistory([{
             items: [],
             selectedIds: [],
-            settings: { unit: "mm", gridSize: 10, mmPerPx: 1, snapEnabled: true }
+            settings: { unit: "mm", gridSize: 10, mmPerPx: 1, snapEnabled: true, angleSnapEnabled: true, fixedAngle: "" }
         }]);
         setHistoryIndex(0);
     }
@@ -1226,17 +1286,55 @@ export default function DrawingCanvas() {
             {/* 数値入力エリア（ツールに応じて表示） */}
             <div style={{ display: "flex", gap: 12, alignItems: "center", height: 32 }}>
                 {(tool === "line" || tool === "arrow") && (
-                    <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        長さ(mm):
-                        <input
-                            type="number"
-                            value={fixedLength}
-                            onChange={(e) => setFixedLength(e.target.value)}
-                            onBlur={() => pushHistory(items, selectedIds, { fixedLength })}
-                            placeholder="自由"
-                            style={{ width: 70, padding: 4, borderRadius: 4 }}
-                        />
-                    </label>
+                    <>
+                        <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                            長さ(mm):
+                            <input
+                                type="number"
+                                value={fixedLength}
+                                onChange={(e) => setFixedLength(e.target.value)}
+                                onBlur={() => pushHistory(items, selectedIds, { fixedLength })}
+                                placeholder="自由"
+                                style={{ width: 70, padding: 4, borderRadius: 4 }}
+                            />
+                        </label>
+                        <label
+                            style={{
+                                display: "flex",
+                                gap: 6,
+                                alignItems: "center",
+                                background: angleSnapEnabled ? "#dbeafe" : "#f3f4f6",
+                                padding: "4px 8px",
+                                borderRadius: 8,
+                                border: angleSnapEnabled ? "1px solid #3b82f6" : "1px solid #999",
+                                cursor: "pointer"
+                            }}
+                        >
+                            <input
+                                type="checkbox"
+                                checked={angleSnapEnabled}
+                                onChange={(e) => {
+                                    const val = e.target.checked;
+                                    setAngleSnapEnabled(val);
+                                    pushHistory(items, selectedIds, { angleSnapEnabled: val });
+                                }}
+                            />
+                            Angle Snap
+                        </label>
+                        <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                            角度(deg):
+                            <input
+                                type="number"
+                                value={fixedAngle}
+                                onChange={(e) => setFixedAngle(e.target.value)}
+                                onBlur={() => pushHistory(items, selectedIds, { fixedAngle })}
+                                placeholder="自由"
+                                style={{ width: 70, padding: 4, borderRadius: 4 }}
+                                min="-180"
+                                max="180"
+                            />
+                        </label>
+                    </>
                 )}
                 {(tool === "rect") && (
                     <>
