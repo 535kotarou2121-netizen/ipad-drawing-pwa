@@ -17,7 +17,10 @@ type Tool =
     | "move"
     | "eraser"
     | "fill"
-    | "measure";
+    | "measure"
+    | "resize";
+
+type ResizeHandle = "nw" | "ne" | "sw" | "se" | "t" | "b" | "l" | "r" | "start" | "end";
 
 type Drawable =
     | {
@@ -155,6 +158,32 @@ function getBounds(d: Drawable) {
     if (d.type === "rect") return { x: d.x, y: d.y, w: d.w, h: d.h };
     if (d.type === "circle") return { x: d.cx - d.r, y: d.cy - d.r, w: d.r * 2, h: d.r * 2 };
     return { x: 0, y: 0, w: 0, h: 0 };
+}
+
+function getResizeHandles(d: Drawable): { id: ResizeHandle; x: number; y: number }[] {
+    if (d.type === "rect") {
+        return [
+            { id: "nw", x: d.x, y: d.y },
+            { id: "ne", x: d.x + d.w, y: d.y },
+            { id: "sw", x: d.x, y: d.y + d.h },
+            { id: "se", x: d.x + d.w, y: d.y + d.h },
+        ];
+    }
+    if (d.type === "circle") {
+        return [
+            { id: "t", x: d.cx, y: d.cy - d.r },
+            { id: "b", x: d.cx, y: d.cy + d.r },
+            { id: "l", x: d.cx - d.r, y: d.cy },
+            { id: "r", x: d.cx + d.r, y: d.cy },
+        ];
+    }
+    if (d.type === "line" || d.type === "arrow" || d.type === "measure") {
+        return [
+            { id: "start", x: d.start.x, y: d.start.y },
+            { id: "end", x: d.end.x, y: d.end.y },
+        ];
+    }
+    return [];
 }
 
 function hitTest(d: Drawable, p: Point) {
@@ -379,6 +408,7 @@ export default function DrawingCanvas() {
     }, []);
 
     const movingRef = useRef<{ last: Point } | null>(null);
+    const resizingRef = useRef<{ handle: ResizeHandle; startItem: Drawable } | null>(null);
 
 
 
@@ -513,6 +543,20 @@ export default function DrawingCanvas() {
                 ctx.setLineDash([6, 6]);
                 ctx.strokeRect(b.x - 6, b.y - 6, b.w + 12, b.h + 12);
                 ctx.restore();
+
+                // Draw handles
+                const handles = getResizeHandles(d);
+                ctx.save();
+                ctx.fillStyle = "#fff";
+                ctx.strokeStyle = "#2563eb";
+                ctx.lineWidth = 2;
+                for (const h of handles) {
+                    ctx.beginPath();
+                    ctx.arc(h.x, h.y, 6, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.stroke();
+                }
+                ctx.restore();
             }
 
             ctx.restore();
@@ -544,6 +588,20 @@ export default function DrawingCanvas() {
         const p = (tool === "freehand" || tool === "select" || tool === "eraser" || tool === "fill" || tool === "move")
             ? rawP
             : snapToGrid(rawP);
+
+        // Check for resize handle hit if selectedId exists
+        if (selectedId && (tool === "select" || tool === "move")) {
+            const selected = items.find(it => it.id === selectedId);
+            if (selected) {
+                const handles = getResizeHandles(selected);
+                for (const h of handles) {
+                    if (dist(rawP, h) <= 12) {
+                        resizingRef.current = { handle: h.id, startItem: JSON.parse(JSON.stringify(selected)) };
+                        return;
+                    }
+                }
+            }
+        }
 
         if (tool === "select") {
             setSelectedId(pickTop(rawP)); // 選択は見た目通りの位置で
@@ -644,6 +702,56 @@ export default function DrawingCanvas() {
 
         if (tool === "move") {
             const mv = movingRef.current;
+            const rs = resizingRef.current;
+
+            if (rs) {
+                let p = snapToGrid(rawP);
+
+                setItems((prev) => prev.map((it) => {
+                    if (it.id !== selectedId) return it;
+
+                    if (it.type === "rect") {
+                        const start = rs.startItem as typeof it;
+                        let { x, y, w, h } = start;
+                        if (rs.handle === "nw") {
+                            const newX = Math.min(p.x, x + w);
+                            const newY = Math.min(p.y, y + h);
+                            w = x + w - newX;
+                            h = y + h - newY;
+                            x = newX;
+                        } else if (rs.handle === "ne") {
+                            const newY = Math.min(p.y, y + h);
+                            w = Math.max(0, p.x - x);
+                            h = y + h - newY;
+                            y = newY;
+                        } else if (rs.handle === "sw") {
+                            const newX = Math.min(p.x, x + w);
+                            w = x + w - newX;
+                            h = Math.max(0, p.y - y);
+                            x = newX;
+                        } else if (rs.handle === "se") {
+                            w = Math.max(0, p.x - x);
+                            h = Math.max(0, p.y - y);
+                        }
+                        return { ...it, x, y, w, h };
+                    }
+
+                    if (it.type === "circle") {
+                        const start = rs.startItem as typeof it;
+                        const newR = dist({ x: start.cx, y: start.cy }, p);
+                        return { ...it, r: newR };
+                    }
+
+                    if (it.type === "line" || it.type === "arrow" || it.type === "measure") {
+                        if (rs.handle === "start") return { ...it, start: p };
+                        if (rs.handle === "end") return { ...it, end: p };
+                    }
+
+                    return it;
+                }));
+                return;
+            }
+
             if (!mv || !selectedId) return;
             const dx = rawP.x - mv.last.x;
             const dy = rawP.y - mv.last.y;
@@ -722,6 +830,15 @@ export default function DrawingCanvas() {
         const c = canvasRef.current;
         if (!c) return;
         c.releasePointerCapture(e.pointerId);
+
+        // Resize確定時に履歴追加
+        if (resizingRef.current) {
+            setItems(prev => {
+                pushHistory(prev, selectedId);
+                return prev;
+            });
+        }
+        resizingRef.current = null;
 
         // Move確定時に履歴追加
         if (movingRef.current) {
@@ -1013,6 +1130,111 @@ export default function DrawingCanvas() {
                     </label>
                 )}
             </div>
+
+            {/* 選択中の図形の数値編集UI */}
+            {selectedId && (
+                <div style={{ display: "flex", gap: 12, alignItems: "center", padding: "8px 12px", background: "#fef9c3", borderRadius: 12, border: "1px solid #fde047" }}>
+                    <span style={{ fontSize: "0.9rem", fontWeight: "bold" }}>選択中:</span>
+                    {items.find(it => it.id === selectedId)?.type === "rect" && (() => {
+                        const it = items.find(it => it.id === selectedId) as any;
+                        const wVal = (it.w * mmPerPx).toFixed(1);
+                        const hVal = (it.h * mmPerPx).toFixed(1);
+                        return (
+                            <>
+                                <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                                    W:
+                                    <input
+                                        type="number"
+                                        defaultValue={wVal}
+                                        onBlur={(e) => {
+                                            const val = Number(e.target.value) / mmPerPx;
+                                            setItems(prev => {
+                                                const next = prev.map(item => item.id === selectedId && item.type === "rect" ? { ...item, w: val } : item);
+                                                pushHistory(next, selectedId);
+                                                return next;
+                                            });
+                                        }}
+                                        style={{ width: 60, padding: 4, borderRadius: 4, border: "1px solid #ccc" }}
+                                    />
+                                </label>
+                                <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                                    H:
+                                    <input
+                                        type="number"
+                                        defaultValue={hVal}
+                                        onBlur={(e) => {
+                                            const val = Number(e.target.value) / mmPerPx;
+                                            setItems(prev => {
+                                                const next = prev.map(item => item.id === selectedId && item.type === "rect" ? { ...item, h: val } : item);
+                                                pushHistory(next, selectedId);
+                                                return next;
+                                            });
+                                        }}
+                                        style={{ width: 60, padding: 4, borderRadius: 4, border: "1px solid #ccc" }}
+                                    />
+                                </label>
+                            </>
+                        );
+                    })()}
+                    {items.find(it => it.id === selectedId)?.type === "circle" && (() => {
+                        const it = items.find(it => it.id === selectedId) as any;
+                        const dVal = (it.r * 2 * mmPerPx).toFixed(1);
+                        return (
+                            <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                                直径:
+                                <input
+                                    type="number"
+                                    defaultValue={dVal}
+                                    onBlur={(e) => {
+                                        const val = (Number(e.target.value) / 2) / mmPerPx;
+                                        setItems(prev => {
+                                            const next = prev.map(item => item.id === selectedId && item.type === "circle" ? { ...item, r: val } : item);
+                                            pushHistory(next, selectedId);
+                                            return next;
+                                        });
+                                    }}
+                                    style={{ width: 60, padding: 4, borderRadius: 4, border: "1px solid #ccc" }}
+                                />
+                            </label>
+                        );
+                    })()}
+                    {(["line", "arrow", "measure"].includes(items.find(it => it.id === selectedId)?.type || "")) && (() => {
+                        const it = items.find(it => it.id === selectedId) as any;
+                        const lenVal = (dist(it.start, it.end) * mmPerPx).toFixed(1);
+                        return (
+                            <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                                長さ:
+                                <input
+                                    type="number"
+                                    defaultValue={lenVal}
+                                    onBlur={(e) => {
+                                        const nextLen = Number(e.target.value) / mmPerPx;
+                                        setItems(prev => {
+                                            const next = prev.map(item => {
+                                                if (item.id !== selectedId || !("start" in item && "end" in item)) return item;
+                                                const d = dist(item.start, item.end);
+                                                if (d === 0) return { ...item, end: { x: item.start.x + nextLen, y: item.start.y } };
+                                                const ratio = nextLen / d;
+                                                return {
+                                                    ...item,
+                                                    end: {
+                                                        x: item.start.x + (item.end.x - item.start.x) * ratio,
+                                                        y: item.start.y + (item.end.y - item.start.y) * ratio,
+                                                    }
+                                                };
+                                            });
+                                            pushHistory(next, selectedId);
+                                            return next;
+                                        });
+                                    }}
+                                    style={{ width: 60, padding: 4, borderRadius: 4, border: "1px solid #ccc" }}
+                                />
+                            </label>
+                        );
+                    })()}
+                    <span style={{ fontSize: "0.8rem", color: "#666" }}>{unit}</span>
+                </div>
+            )}
 
             {/* 保存UI：PNG/JSONを別ボタン */}
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
