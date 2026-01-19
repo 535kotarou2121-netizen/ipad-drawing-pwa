@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from "react";
 type Snapshot = {
     items: Drawable[];
     selectedId: string | null;
+    settings: AppSettings;
 };
 type Point = { x: number; y: number };
 
@@ -15,7 +16,8 @@ type Tool =
     | "select"
     | "move"
     | "eraser"
-    | "fill";
+    | "fill"
+    | "measure";
 
 type Drawable =
     | {
@@ -53,6 +55,14 @@ type Drawable =
         stroke: string;
         width: number;
         fill?: string;
+    }
+    | {
+        id: string;
+        type: "measure";
+        start: Point;
+        end: Point;
+        stroke: string;
+        width: number;
     };
 
 function uid() {
@@ -135,6 +145,13 @@ function getBounds(d: Drawable) {
         const maxY = Math.max(d.start.y, d.end.y);
         return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
     }
+    if (d.type === "measure") {
+        const minX = Math.min(d.start.x, d.end.x);
+        const maxX = Math.max(d.start.x, d.end.x);
+        const minY = Math.min(d.start.y, d.end.y);
+        const maxY = Math.max(d.start.y, d.end.y);
+        return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+    }
     if (d.type === "rect") return { x: d.x, y: d.y, w: d.w, h: d.h };
     if (d.type === "circle") return { x: d.cx - d.r, y: d.cy - d.r, w: d.r * 2, h: d.r * 2 };
     return { x: 0, y: 0, w: 0, h: 0 };
@@ -151,6 +168,10 @@ function hitTest(d: Drawable, p: Point) {
     }
 
     if (d.type === "line" || d.type === "arrow") {
+        return distancePointToSegment(p, d.start, d.end) <= tol;
+    }
+
+    if (d.type === "measure") {
         return distancePointToSegment(p, d.start, d.end) <= tol;
     }
 
@@ -174,14 +195,29 @@ function translateDrawable(d: Drawable, dx: number, dy: number): Drawable {
             end: { x: d.end.x + dx, y: d.end.y + dy },
         };
     }
+    if (d.type === "measure") {
+        return {
+            ...d,
+            start: { x: d.start.x + dx, y: d.start.y + dy },
+            end: { x: d.end.x + dx, y: d.end.y + dy },
+        };
+    }
     if (d.type === "rect") return { ...d, x: d.x + dx, y: d.y + dy };
     if (d.type === "circle") return { ...d, cx: d.cx + dx, cy: d.cy + dy };
     return d;
 }
 
+type AppSettings = {
+    unit: "mm" | "cm" | "m";
+    gridSize: number; // grid px (still used for snapping if desired)
+    mmPerPx: number;  // 1px = ? mm
+    snapEnabled: boolean;
+};
+
 type SavePayload = {
     version: number;
     items: Drawable[];
+    settings?: AppSettings;
     meta?: { createdAt: string };
 };
 
@@ -230,6 +266,16 @@ export default function DrawingCanvas() {
     // Snap
     const [snapEnabled, setSnapEnabled] = useState(true);
     const [gridSize, setGridSize] = useState(10);
+    // Scale Settings
+    const [unit, setUnit] = useState<"mm" | "cm" | "m">("mm");
+    const [mmPerPx, setMmPerPx] = useState(1); // 1px = 1mm (default)
+
+    // Numerical Inputs (Drawing Size)
+    // stringで管理して空入力を許容する
+    const [fixedLength, setFixedLength] = useState(""); // for line/arrow
+    const [fixedWidth, setFixedWidth] = useState("");   // for rect
+    const [fixedHeight, setFixedHeight] = useState(""); // for rect
+    const [fixedDiameter, setFixedDiameter] = useState(""); // for circle
 
     const snapToGrid = (p: Point) => {
         if (!snapEnabled) return p;
@@ -253,8 +299,12 @@ export default function DrawingCanvas() {
         };
     };
 
-    const pushHistory = (nextItems: Drawable[], nextSelectedId: string | null) => {
-        const newSnapshot: Snapshot = { items: nextItems, selectedId: nextSelectedId };
+    const pushHistory = (nextItems: Drawable[], nextSelectedId: string | null, settingsOverride?: Partial<AppSettings>) => {
+        const newSnapshot: Snapshot = {
+            items: nextItems,
+            selectedId: nextSelectedId,
+            settings: { unit, gridSize, mmPerPx, snapEnabled, ...settingsOverride }
+        };
         setHistory((prev) => {
             const newHistory = prev.slice(0, historyIndex + 1);
             newHistory.push(newSnapshot);
@@ -273,6 +323,10 @@ export default function DrawingCanvas() {
         const snap = history[nextIndex];
         setItems(snap.items);
         setSelectedId(snap.selectedId);
+        setUnit(snap.settings.unit);
+        setGridSize(snap.settings.gridSize);
+        setMmPerPx(snap.settings.mmPerPx);
+        setSnapEnabled(snap.settings.snapEnabled);
     };
 
     const redo = () => {
@@ -282,12 +336,20 @@ export default function DrawingCanvas() {
         const snap = history[nextIndex];
         setItems(snap.items);
         setSelectedId(snap.selectedId);
+        setUnit(snap.settings.unit);
+        setGridSize(snap.settings.gridSize);
+        setMmPerPx(snap.settings.mmPerPx);
+        setSnapEnabled(snap.settings.snapEnabled);
     };
 
     // Initial History
     useEffect(() => {
         if (history.length === 0) {
-            setHistory([{ items: [], selectedId: null }]);
+            setHistory([{
+                items: [],
+                selectedId: null,
+                settings: { unit: "mm", gridSize: 10, mmPerPx: 1, snapEnabled: true }
+            }]);
             setHistoryIndex(0);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -376,6 +438,42 @@ export default function DrawingCanvas() {
                 ctx.lineTo(d.end.x, d.end.y);
                 ctx.stroke();
                 drawArrowHead(ctx, d.start, d.end, Math.max(12, d.width * 3));
+            } else if (d.type === "measure") {
+                ctx.beginPath();
+                ctx.moveTo(d.start.x, d.start.y);
+                ctx.lineTo(d.end.x, d.end.y);
+                ctx.stroke();
+
+                // Draw text
+                const distPx = dist(d.start, d.end);
+
+                // 距離(mm) = 距離(px) * mmPerPx
+                const distMm = distPx * mmPerPx;
+
+                let val = distMm;
+                if (unit === "cm") val = distMm / 10;
+                else if (unit === "m") val = distMm / 1000;
+
+                const valStr = Math.round(val * 10) / 10;
+                const text = `${valStr} ${unit}`;
+
+                const cx = (d.start.x + d.end.x) / 2;
+                const cy = (d.start.y + d.end.y) / 2;
+
+                ctx.save();
+                ctx.fillStyle = d.stroke;
+                ctx.font = "bold 14px sans-serif";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                // 背景に白を敷く（見やすくするため）
+                const metrics = ctx.measureText(text);
+                const bgW = metrics.width + 8;
+                const bgH = 20;
+                ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
+                ctx.fillRect(cx - bgW / 2, cy - bgH / 2, bgW, bgH);
+                ctx.fillStyle = d.stroke;
+                ctx.fillText(text, cx, cy);
+                ctx.restore();
             } else if (d.type === "rect") {
                 ctx.strokeRect(d.x, d.y, d.w, d.h);
             } else if (d.type === "circle") {
@@ -404,7 +502,7 @@ export default function DrawingCanvas() {
     useEffect(() => {
         redraw();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [items, draft, selectedId]);
+    }, [items, draft, selectedId, unit, mmPerPx]);
 
     function pickTop(p: Point) {
         for (let i = items.length - 1; i >= 0; i--) {
@@ -476,14 +574,14 @@ export default function DrawingCanvas() {
             return;
         }
 
-        if (tool === "line" || tool === "arrow") {
+        if (tool === "line" || tool === "arrow" || tool === "measure") {
             setDraft({
                 id: uid(),
                 type: tool,
                 start: p,
                 end: p,
                 stroke,
-                width: lineWidth,
+                width: tool === "measure" ? 1 : lineWidth, // 測定は細め固定でも良いが一旦太さも反映
             });
             return;
         }
@@ -545,13 +643,36 @@ export default function DrawingCanvas() {
         if (draft.type === "line" || draft.type === "arrow") {
             // アングルスナップ適用
             p = snapAngle(draft.start, p);
+
+            // 数値指定があれば長さを固定
+            if (fixedLength && Number(fixedLength) > 0) {
+                const lenMm = Number(fixedLength);
+                const lenPx = lenMm / mmPerPx;
+                const angle = Math.atan2(p.y - draft.start.y, p.x - draft.start.x);
+                p = {
+                    x: draft.start.x + Math.cos(angle) * lenPx,
+                    y: draft.start.y + Math.sin(angle) * lenPx,
+                };
+            }
+
             setDraft({ ...draft, end: p });
             return;
         }
 
         if (draft.type === "rect") {
-            const w = p.x - draft.x;
-            const h = p.y - draft.y;
+            let w = p.x - draft.x;
+            let h = p.y - draft.y;
+
+            // 数値指定があればサイズ固定（ドラッグ方向は考慮）
+            if (fixedWidth && Number(fixedWidth) > 0) {
+                const wPx = Number(fixedWidth) / mmPerPx;
+                w = (w >= 0 ? 1 : -1) * wPx;
+            }
+            if (fixedHeight && Number(fixedHeight) > 0) {
+                const hPx = Number(fixedHeight) / mmPerPx;
+                h = (h >= 0 ? 1 : -1) * hPx;
+            }
+
             // 軸スナップ（高さ/幅が極端に小さい場合、0にして直線化するなど）は
             // グリッドスナップがあればある程度自然にできるため、今回はGrid任せにする
             const r = clampRect(draft.x, draft.y, w, h);
@@ -560,7 +681,15 @@ export default function DrawingCanvas() {
         }
 
         if (draft.type === "circle") {
-            const r = dist({ x: draft.cx, y: draft.cy }, p);
+            let r = dist({ x: draft.cx, y: draft.cy }, p);
+
+            // 数値指定（直径）があれば半径固定
+            if (fixedDiameter && Number(fixedDiameter) > 0) {
+                const dMm = Number(fixedDiameter);
+                const dPx = dMm / mmPerPx;
+                r = dPx / 2;
+            }
+
             setDraft({ ...draft, r });
             return;
         }
@@ -587,7 +716,7 @@ export default function DrawingCanvas() {
 
         const shouldKeep = (() => {
             if (draft.type === "freehand") return draft.points.length > 2;
-            if (draft.type === "line" || draft.type === "arrow") return dist(draft.start, draft.end) > 6;
+            if (draft.type === "line" || draft.type === "arrow" || draft.type === "measure") return dist(draft.start, draft.end) > 6;
             if (draft.type === "rect") return draft.w > 6 && draft.h > 6;
             if (draft.type === "circle") return draft.r > 6;
             return true;
@@ -609,6 +738,12 @@ export default function DrawingCanvas() {
         const payload: SavePayload = {
             version: 1,
             items,
+            settings: {
+                unit,
+                gridSize,
+                mmPerPx,
+                snapEnabled,
+            },
             meta: { createdAt: new Date().toISOString() },
         };
         const text = JSON.stringify(payload, null, 2);
@@ -649,6 +784,26 @@ export default function DrawingCanvas() {
             }
 
             setItems(parsed.items);
+            let newSettings: AppSettings = { unit, gridSize, mmPerPx, snapEnabled };
+            if (parsed.settings) {
+                setUnit(parsed.settings.unit);
+                setGridSize(parsed.settings.gridSize);
+                // 互換性: 古い mmPerGrid があれば変換、なければ mmPerPx を使う
+                // もし mmPerGrid(1gridあたりmm) があるなら、mmPerPx = mmPerGrid / gridSize
+                if ((parsed.settings as any).mmPerGrid) {
+                    const mpg = (parsed.settings as any).mmPerGrid;
+                    const gs = parsed.settings.gridSize || 10;
+                    const calculatedMmPerPx = mpg / gs;
+                    setMmPerPx(calculatedMmPerPx);
+                    newSettings = { ...parsed.settings, mmPerPx: calculatedMmPerPx };
+                } else if (parsed.settings.mmPerPx) {
+                    setMmPerPx(parsed.settings.mmPerPx);
+                    newSettings = parsed.settings;
+                } else {
+                    newSettings = { ...parsed.settings, mmPerPx: 1 };
+                }
+                setSnapEnabled(parsed.settings.snapEnabled);
+            }
             setSelectedId(null);
             setDraft(null);
 
@@ -656,13 +811,26 @@ export default function DrawingCanvas() {
             // state更新後に積むため（ここでは同期的に呼んで問題ないが、念のためsetTimeout等は使わず直接呼ぶ）
             // ただしsetItemsは非同期なので、useEffect等で検知するか、あるいはここで明示的に積む必要がある
             // ここでは推移として「読み込み」扱いにする
-            pushHistory(parsed.items, null);
+            pushHistory(parsed.items, null, newSettings);
         } catch (err) {
             alert("Failed to open JSON");
         } finally {
             // 同じファイルを連続で選べるようにリセット
             e.target.value = "";
         }
+    }
+
+    function resetProject() {
+        if (!confirm("現在の作業内容をすべて消去しますか？")) return;
+        setItems([]);
+        setSelectedId(null);
+        setDraft(null);
+        setHistory([{
+            items: [],
+            selectedId: null,
+            settings: { unit: "mm", gridSize: 10, mmPerPx: 1, snapEnabled: true }
+        }]);
+        setHistoryIndex(0);
     }
 
     return (
@@ -680,6 +848,7 @@ export default function DrawingCanvas() {
                         ["move", "移動"],
                         ["eraser", "消し"],
                         ["fill", "塗り"],
+                        ["measure", "寸法"],
                     ] as const
                 ).map(([t, label]) => (
                     <button
@@ -701,14 +870,22 @@ export default function DrawingCanvas() {
                         <input
                             type="checkbox"
                             checked={snapEnabled}
-                            onChange={(e) => setSnapEnabled(e.target.checked)}
+                            onChange={(e) => {
+                                const val = e.target.checked;
+                                setSnapEnabled(val);
+                                pushHistory(items, selectedId, { snapEnabled: val });
+                            }}
                         />
                         Snap
                     </label>
                     {snapEnabled && (
                         <select
                             value={gridSize}
-                            onChange={(e) => setGridSize(Number(e.target.value))}
+                            onChange={(e) => {
+                                const val = Number(e.target.value);
+                                setGridSize(val);
+                                pushHistory(items, selectedId, { gridSize: val });
+                            }}
                             style={{ padding: "4px", borderRadius: 4 }}
                         >
                             <option value={5}>5px</option>
@@ -718,6 +895,31 @@ export default function DrawingCanvas() {
                             <option value={50}>50px</option>
                         </select>
                     )}
+                    <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        1px=
+                        <input
+                            type="number"
+                            value={mmPerPx}
+                            onChange={(e) => setMmPerPx(Number(e.target.value))}
+                            onBlur={(e) => pushHistory(items, selectedId, { mmPerPx: Number(e.target.value) })}
+                            style={{ width: 60, padding: 4, borderRadius: 4 }}
+                            step={0.1}
+                        />
+                        mm
+                    </label>
+                    <select
+                        value={unit}
+                        onChange={(e) => {
+                            const val = e.target.value as any;
+                            setUnit(val);
+                            pushHistory(items, selectedId, { unit: val });
+                        }}
+                        style={{ padding: "4px", borderRadius: 4 }}
+                    >
+                        <option value="mm">mm</option>
+                        <option value="cm">cm</option>
+                        <option value="m">m</option>
+                    </select>
                     <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
                         線
                         <input type="color" value={stroke} onChange={(e) => setStroke(e.target.value)} />
@@ -737,6 +939,58 @@ export default function DrawingCanvas() {
                         <input type="color" value={fillColor} onChange={(e) => setFillColor(e.target.value)} />
                     </label>
                 </div>
+            </div>
+
+            {/* 数値入力エリア（ツールに応じて表示） */}
+            <div style={{ display: "flex", gap: 12, alignItems: "center", height: 32 }}>
+                {(tool === "line" || tool === "arrow") && (
+                    <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        長さ(mm):
+                        <input
+                            type="number"
+                            value={fixedLength}
+                            onChange={(e) => setFixedLength(e.target.value)}
+                            placeholder="自由"
+                            style={{ width: 70, padding: 4, borderRadius: 4 }}
+                        />
+                    </label>
+                )}
+                {(tool === "rect") && (
+                    <>
+                        <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                            幅(mm):
+                            <input
+                                type="number"
+                                value={fixedWidth}
+                                onChange={(e) => setFixedWidth(e.target.value)}
+                                placeholder="自由"
+                                style={{ width: 70, padding: 4, borderRadius: 4 }}
+                            />
+                        </label>
+                        <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                            高さ(mm):
+                            <input
+                                type="number"
+                                value={fixedHeight}
+                                onChange={(e) => setFixedHeight(e.target.value)}
+                                placeholder="自由"
+                                style={{ width: 70, padding: 4, borderRadius: 4 }}
+                            />
+                        </label>
+                    </>
+                )}
+                {(tool === "circle") && (
+                    <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        直径(mm):
+                        <input
+                            type="number"
+                            value={fixedDiameter}
+                            onChange={(e) => setFixedDiameter(e.target.value)}
+                            placeholder="自由"
+                            style={{ width: 70, padding: 4, borderRadius: 4 }}
+                        />
+                    </label>
+                )}
             </div>
 
             {/* 保存UI：PNG/JSONを別ボタン */}
@@ -773,6 +1027,18 @@ export default function DrawingCanvas() {
                     }}
                 >
                     Open(JSON)
+                </button>
+                <button
+                    onClick={resetProject}
+                    style={{
+                        padding: "10px 14px",
+                        borderRadius: 12,
+                        border: "1px solid #e11d48",
+                        background: "#ffe4e6",
+                        color: "#e11d48",
+                    }}
+                >
+                    New Project
                 </button>
                 <div style={{ width: 1, height: 24, background: "#ccc", margin: "0 8px" }} />
                 <button
