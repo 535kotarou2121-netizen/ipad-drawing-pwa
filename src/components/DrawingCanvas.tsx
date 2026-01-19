@@ -317,6 +317,8 @@ export default function DrawingCanvas() {
     const [angleSnapEnabled, setAngleSnapEnabled] = useState(true);
     const [fixedAngle, setFixedAngle] = useState(""); // deg
 
+    const [helpOpen, setHelpOpen] = useState(false);
+
     const [view, setView] = useState({ scale: 1, offsetX: 0, offsetY: 0 });
     const pointersRef = useRef<Record<number, Point>>({});
     const lastPinchDistRef = useRef<number | null>(null);
@@ -605,11 +607,13 @@ export default function DrawingCanvas() {
             // Draw angle label for line/arrow draft
             if (!isSelected && d === draft && (d.type === "line" || d.type === "arrow")) {
                 const angleRad = Math.atan2(d.end.y - d.start.y, d.end.x - d.start.x);
-                const angleDeg = (angleRad * 180) / Math.PI;
+                let angleDeg = (angleRad * 180) / Math.PI;
+                // 表示用に 0-360 に正規化
+                angleDeg = ((angleDeg % 360) + 360) % 360;
                 const text = `${angleDeg.toFixed(1)}°`;
                 ctx.save();
                 ctx.fillStyle = "#ef4444";
-                ctx.font = "12px sans-serif";
+                ctx.font = "bold 14px sans-serif";
                 ctx.fillText(text, d.end.x + 10, d.end.y + 10);
                 ctx.restore();
             }
@@ -953,13 +957,20 @@ export default function DrawingCanvas() {
             let finalP = p;
 
             if (isPrecision && fixedAngle !== "" && !isNaN(Number(fixedAngle))) {
-                // (A) 角度入力がある
-                const deg = Number(fixedAngle);
+                // (A) 角度入力がある (0-360°正規化)
+                let deg = Number(fixedAngle);
+                deg = ((deg % 360) + 360) % 360;
                 const rad = (deg * Math.PI) / 180;
+
                 let lenPx = dist(draft.start, worldP);
                 if (fixedLength && Number(fixedLength) > 0) {
-                    lenPx = Number(fixedLength) / mmPerPx;
+                    const lenVal = Number(fixedLength);
+                    let baseMm = lenVal;
+                    if (unit === "cm") baseMm = lenVal * 10;
+                    else if (unit === "m") baseMm = lenVal * 1000;
+                    lenPx = baseMm / mmPerPx;
                 }
+
                 finalP = {
                     x: draft.start.x + Math.cos(rad) * lenPx,
                     y: draft.start.y + Math.sin(rad) * lenPx
@@ -968,7 +979,12 @@ export default function DrawingCanvas() {
                 // (B) Angle Snap ON
                 finalP = snapAngle(draft.start, p);
                 if (fixedLength && Number(fixedLength) > 0) {
-                    const lenPx = Number(fixedLength) / mmPerPx;
+                    const lenVal = Number(fixedLength);
+                    let baseMm = lenVal;
+                    if (unit === "cm") baseMm = lenVal * 10;
+                    else if (unit === "m") baseMm = lenVal * 1000;
+                    const lenPx = baseMm / mmPerPx;
+
                     const angle = Math.atan2(finalP.y - draft.start.y, finalP.x - draft.start.x);
                     finalP = { x: draft.start.x + Math.cos(angle) * lenPx, y: draft.start.y + Math.sin(angle) * lenPx };
                 }
@@ -976,7 +992,12 @@ export default function DrawingCanvas() {
                 // (C) Angle Snap OFF (完全に自由角度)
                 finalP = worldP;
                 if (fixedLength && Number(fixedLength) > 0) {
-                    const lenPx = Number(fixedLength) / mmPerPx;
+                    const lenVal = Number(fixedLength);
+                    let baseMm = lenVal;
+                    if (unit === "cm") baseMm = lenVal * 10;
+                    else if (unit === "m") baseMm = lenVal * 1000;
+                    const lenPx = baseMm / mmPerPx;
+
                     const angle = Math.atan2(finalP.y - draft.start.y, finalP.x - draft.start.x);
                     finalP = { x: draft.start.x + Math.cos(angle) * lenPx, y: draft.start.y + Math.sin(angle) * lenPx };
                 }
@@ -984,7 +1005,12 @@ export default function DrawingCanvas() {
                 // 寸法ツールは常にSnapAngle (既存挙動維持)
                 finalP = snapAngle(draft.start, p);
                 if (fixedLength && Number(fixedLength) > 0) {
-                    const lenPx = Number(fixedLength) / mmPerPx;
+                    const lenVal = Number(fixedLength);
+                    let baseMm = lenVal;
+                    if (unit === "cm") baseMm = lenVal * 10;
+                    else if (unit === "m") baseMm = lenVal * 1000;
+                    const lenPx = baseMm / mmPerPx;
+
                     const angle = Math.atan2(finalP.y - draft.start.y, finalP.x - draft.start.x);
                     finalP = { x: draft.start.x + Math.cos(angle) * lenPx, y: draft.start.y + Math.sin(angle) * lenPx };
                 }
@@ -1596,6 +1622,28 @@ export default function DrawingCanvas() {
                     <button onClick={() => setView({ scale: 1, offsetX: 0, offsetY: 0 })} style={{ padding: "4px 8px", borderRadius: 4, background: "#fff", border: "1px solid #999" }}>Reset</button>
                 </div>
 
+                <div style={{ marginLeft: 8 }}>
+                    <button
+                        onClick={() => setHelpOpen(true)}
+                        style={{
+                            width: 32,
+                            height: 32,
+                            borderRadius: "50%",
+                            border: "1px solid #999",
+                            background: "#fff",
+                            cursor: "pointer",
+                            fontWeight: "bold",
+                            fontSize: "1.2rem",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center"
+                        }}
+                        title="HELP"
+                    >
+                        ?
+                    </button>
+                </div>
+
                 <input
                     ref={fileInputRef}
                     type="file"
@@ -1618,6 +1666,108 @@ export default function DrawingCanvas() {
                     background: "#d6d6d6",
                 }}
             />
+
+            {/* ヘルプモーダル */}
+            {helpOpen && (
+                <div
+                    style={{
+                        position: "fixed", top: 0, left: 0, width: "100%", height: "100%",
+                        background: "rgba(0,0,0,0.5)", zIndex: 1000,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        padding: 20
+                    }}
+                    onClick={() => setHelpOpen(false)}
+                >
+                    <div
+                        style={{
+                            background: "#fff", borderRadius: 16, width: "100%", maxWidth: 500,
+                            maxHeight: "80vh", overflowY: "auto", position: "relative",
+                            padding: "24px", boxShadow: "0 10px 25px rgba(0,0,0,0.2)"
+                        }}
+                        onClick={e => e.stopPropagation()}
+                    >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                            <h2 style={{ margin: 0, fontSize: "1.4rem" }}>使い方ガイド</h2>
+                            <button
+                                onClick={() => setHelpOpen(false)}
+                                style={{ border: "none", background: "none", fontSize: "1.5rem", cursor: "pointer", padding: 4 }}
+                            >
+                                ×
+                            </button>
+                        </div>
+
+                        <div style={{ display: "grid", gap: 12 }}>
+                            {HELP_ITEMS.map((item, i) => (
+                                <details key={i} style={{ border: "1px solid #eee", borderRadius: 8, padding: "8px 12px", background: "#f9fafb" }}>
+                                    <summary style={{ fontWeight: "bold", cursor: "pointer", listStyle: "none", outline: "none" }}>
+                                        {item.title} <span style={{ fontWeight: "normal", fontSize: "0.85rem", color: "#666", marginLeft: 8 }}>- {item.short}</span>
+                                    </summary>
+                                    <div style={{ marginTop: 8, fontSize: "0.9rem", color: "#374151", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
+                                        {item.details}
+                                    </div>
+                                </details>
+                            ))}
+                        </div>
+
+                        <div style={{ marginTop: 24, padding: "12px", background: "#eff6ff", borderRadius: 8, fontSize: "0.85rem", color: "#1e40af" }}>
+                            <strong>ヒント:</strong> iPadでは2本指でのピンチ操作でズーム、Panツールで画面移動ができます。
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
+
+const HELP_ITEMS = [
+    {
+        title: "✏️ Freehand",
+        short: "自由形式の描画",
+        details: "ペンや指で自由に線を引きます。iPadでの手書きメモに適しています。"
+    },
+    {
+        title: "／ Line / ➤ Arrow",
+        short: "直線と矢印",
+        details: "ドラッグで作成します。「Angle Snap」がONなら45度刻みで吸着し、数値を入力すれば指定した長さや角度で正確に描画できます。"
+    },
+    {
+        title: "□ Rect / ◯ Circle",
+        short: "基本図形",
+        details: "ドラッグで作成します。幅、高さ、直径を数値指定することで、精密な図形を配置できます。作成後に「塗り」ツールで色を付けられます。"
+    },
+    {
+        title: "選択 / 複数選択",
+        short: "図形の編集",
+        details: "図形をタップして選択します。「Add Select」をONにすると複数を同時に選択でき、まとめて移動、複製、削除が可能です。"
+    },
+    {
+        title: "移動 / ✋ パン",
+        short: "位置の調整",
+        details: "「移動」ツールは選択した図形を動かします。「Pan(✋)」ツールは画面表示（視点）そのものを移動させます。"
+    },
+    {
+        title: "消し / 塗り",
+        short: "削除と着色",
+        details: "「消し」ツールで図形を削除します。「塗り」ツールは、選択中の四角や円に指定した色を適用します。"
+    },
+    {
+        title: "寸法 (Measure)",
+        short: "距離の測定",
+        details: "2点間をドラッグして、その距離をリアルワールドの単位（mm/cm/m）で表示します。DIYの設計図作成に便利です。"
+    },
+    {
+        title: "保存 / 読み込み",
+        short: "データの管理",
+        details: "PNG Save：画像として保存。\nJSON Save：編集可能なデータとして保存。\nOpen JSON：過去に保存したJSONファイルを読み込みます。"
+    },
+    {
+        title: "Undo / Redo",
+        short: "戻す・進む",
+        details: "操作を一つ前に戻したり、やり直したりできます。設定の変更も履歴に含まれます。"
+    },
+    {
+        title: "縮尺設定 (1px=Xmm)",
+        short: "スケールの調整",
+        details: "画面上の1ピクセルが実世界の何ミリに相当するかを設定します。これにより、正確な実寸での作図が可能になります。"
+    }
+];
