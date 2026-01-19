@@ -144,28 +144,67 @@ export const DrawingCanvas: React.FC = () => {
         }
     };
 
-    const handleSave = async () => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-
-        showToast("Generating files...");
-
+    const saveJsonToFiles = async () => {
+        showToast("Preparing JSON...");
         try {
-            // Generate Timestamp
-            const now = new Date();
-            const timestamp = now.toISOString().slice(0, 19).replace(/T|:/g, '-');
-            const filenameBase = `draw-${timestamp}`;
+            const timestamp = new Date().toISOString().slice(0, 19).replace(/T|:/g, '-');
+            const filename = `drawing-${timestamp}.json`;
 
-            // 1. Generate JSON Blob
             const jsonData = {
                 version: 1,
                 items: items
             };
-            const jsonString = JSON.stringify(jsonData);
-            const jsonBlob = new Blob([jsonString], { type: "application/json" });
-            const jsonFile = new File([jsonBlob], `${filenameBase}.json`, { type: "application/json" });
+            const jsonString = JSON.stringify(jsonData, null, 2);
+            const blob = new Blob([jsonString], { type: "application/json" });
+            const file = new File([blob], filename, { type: "application/json" });
 
-            // 2. Generate PNG Blob
+            // Priority: Web Share API
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                try {
+                    await navigator.share({
+                        files: [file],
+                        title: 'Drawing Data',
+                        text: 'Save your drawing JSON data'
+                    });
+                    showToast("JSON Saved/Shared");
+                    return;
+                } catch (e) {
+                    if ((e as Error).name !== 'AbortError') {
+                        console.warn("Share failed", e);
+                    } else {
+                        return; // User cancelled
+                    }
+                }
+            }
+
+            // Fallback: Download
+            const href = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = href;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(href);
+            showToast("JSON Downloaded (Fallback)");
+
+        } catch (e) {
+            console.error("JSON Save Error:", e);
+            alert("Failed to save JSON.");
+        }
+    };
+
+    const savePng = async () => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        showToast("Generating PNG...");
+
+        try {
+            const timestamp = new Date().toISOString().slice(0, 19).replace(/T|:/g, '-');
+            const filename = `drawing-${timestamp}.png`;
+
+            // Generate PNG Blob
             const tempCanvas = document.createElement('canvas');
             tempCanvas.width = canvas.width;
             tempCanvas.height = canvas.height;
@@ -176,105 +215,44 @@ export const DrawingCanvas: React.FC = () => {
             tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
             tempCtx.drawImage(canvas, 0, 0);
 
-            const pngBlob = await new Promise<Blob | null>(resolve => tempCanvas.toBlob(resolve, 'image/png'));
-            if (!pngBlob) throw new Error("PNG generation failed");
-            const pngFile = new File([pngBlob], `${filenameBase}.png`, { type: "image/png" });
+            const blob = await new Promise<Blob | null>(resolve => tempCanvas.toBlob(resolve, 'image/png'));
+            if (!blob) throw new Error("PNG generation failed");
+            const file = new File([blob], filename, { type: "image/png" });
 
-            // Helper to download file (Fallback)
-            const downloadFile = (blob: Blob, filename: string) => {
-                const href = URL.createObjectURL(blob);
-                const link = document.createElement('a');
-                link.href = href;
-                link.download = filename;
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                URL.revokeObjectURL(href);
-            };
-
-            // Helper to share files
-            const tryShare = async (files: File[]): Promise<boolean> => {
-                if (navigator.canShare && navigator.canShare({ files })) {
-                    try {
-                        await navigator.share({
-                            files,
-                            title: 'Simple Drawing',
-                            text: 'Here is my drawing!'
-                        });
-                        return true;
-                    } catch (error) {
-                        if ((error as Error).name === 'AbortError') return true; // Cancelled is "handled"
-                        console.warn('Share failed:', error);
-                        return false;
-                    }
-                } else {
-                    console.warn("canShare returned false for", files.map(f => f.type));
-                }
-                return false;
-            };
-
-            // 3. Tiered Execution Strategy
-
-            // Tier A: Share Combined
-            const combinedSuccess = await tryShare([jsonFile, pngFile]);
-            if (combinedSuccess) {
-                showToast("Shared successfully!");
-                return;
-            }
-
-            // Tier B: Share Individually
-            console.log("Combined share failed. Trying individual...");
-
-            // B-1: JSON Priority
-            const jsonSuccess = await tryShare([jsonFile]);
-            if (jsonSuccess) {
-                showToast("JSON shared. Now trying PNG...");
-                // Try PNG separately if JSON succeeded
-                await tryShare([pngFile]);
-                return;
-            } else {
-                console.warn("JSON share failed.");
-            }
-
-            // B-2: PNG Only (if JSON share fail)
-            // Just try to save the image at least
-            if (!jsonSuccess) {
-                const pngSuccess = await tryShare([pngFile]);
-                if (pngSuccess) {
-                    showToast("PNG saved. JSON failed share.");
-                    // Since JSON failed share, try download fallback for JSON
-                    downloadFile(jsonBlob, `${filenameBase}.json`);
-                    showToast("Downloaded JSON as fallback.");
+            // Priority: Web Share API
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                try {
+                    await navigator.share({
+                        files: [file],
+                        title: 'Drawing Image',
+                        text: 'Here is my drawing!'
+                    });
+                    showToast("PNG Shared");
                     return;
+                } catch (e) {
+                    if ((e as Error).name !== 'AbortError') {
+                        console.warn("Share failed", e);
+                    } else {
+                        return; // User cancelled
+                    }
                 }
             }
 
-            // Tier C: Download Fallback (All Share Failed)
-            console.log("All share attempts failed. Falling back to download.");
-            showToast("Share failed. Downloading files...");
-
-            downloadFile(jsonBlob, `${filenameBase}.json`);
-            setTimeout(() => {
-                downloadFile(pngBlob, `${filenameBase}.png`);
-            }, 500);
+            // Fallback: Download
+            const href = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = href;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(href);
+            showToast("PNG Downloaded (Fallback)");
 
         } catch (e) {
-            console.error("Critical Save Error:", e);
-            alert(`Error: ${(e as Error).message}`);
-            showToast("Error during save generation");
+            console.error("PNG Save Error:", e);
+            alert("Failed to save PNG.");
         }
-    };
-
-    const handleExportJson = () => {
-        const jsonData = {
-            version: 1,
-            items: items
-        };
-        const jsonString = JSON.stringify(jsonData, null, 2);
-        const blob = new Blob([jsonString], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        window.open(url, '_blank');
-        showToast("Opened JSON in new tab");
     };
 
     const handleOpenClick = () => {
@@ -425,28 +403,22 @@ export const DrawingCanvas: React.FC = () => {
                 alignItems: 'center'
             }}>
                 <button
-                    onClick={handleExportJson}
-                    title="Export JSON (Fallback)"
+                    onClick={saveJsonToFiles}
                     style={{
-                        padding: '12px',
+                        padding: '12px 20px',
                         fontSize: '14px',
-                        borderRadius: '50%',
-                        border: '1px solid #ccc',
+                        borderRadius: '30px',
+                        border: '1px solid #333',
                         background: '#fff',
                         color: '#333',
                         boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
-                        cursor: 'pointer',
-                        width: '44px',
-                        height: '44px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center'
+                        cursor: 'pointer'
                     }}
                 >
-                    JS
+                    JSON Save
                 </button>
                 <button
-                    onClick={handleSave}
+                    onClick={savePng}
                     style={{
                         padding: '12px 24px',
                         fontSize: '16px',
@@ -458,7 +430,7 @@ export const DrawingCanvas: React.FC = () => {
                         cursor: 'pointer'
                     }}
                 >
-                    Save
+                    PNG Save
                 </button>
                 <button
                     onClick={handleOpenClick}
