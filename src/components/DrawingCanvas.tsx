@@ -227,6 +227,32 @@ export default function DrawingCanvas() {
     const [history, setHistory] = useState<Snapshot[]>([]);
     const [historyIndex, setHistoryIndex] = useState<number>(-1);
 
+    // Snap
+    const [snapEnabled, setSnapEnabled] = useState(true);
+    const [gridSize, setGridSize] = useState(10);
+
+    const snapToGrid = (p: Point) => {
+        if (!snapEnabled) return p;
+        return {
+            x: Math.round(p.x / gridSize) * gridSize,
+            y: Math.round(p.y / gridSize) * gridSize,
+        };
+    };
+
+    const snapAngle = (start: Point, end: Point) => {
+        if (!snapEnabled) return end;
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < 4) return end;
+        const angle = Math.atan2(dy, dx);
+        const snappedAngle = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+        return {
+            x: start.x + Math.cos(snappedAngle) * dist,
+            y: start.y + Math.sin(snappedAngle) * dist,
+        };
+    };
+
     const pushHistory = (nextItems: Drawable[], nextSelectedId: string | null) => {
         const newSnapshot: Snapshot = { items: nextItems, selectedId: nextSelectedId };
         setHistory((prev) => {
@@ -392,15 +418,19 @@ export default function DrawingCanvas() {
         if (!c) return;
         c.setPointerCapture(e.pointerId);
 
-        const p = getCanvasPoint(e, c);
+        const rawP = getCanvasPoint(e, c);
+        // Freehand以外は生成時にグリッドスナップ
+        const p = (tool === "freehand" || tool === "select" || tool === "eraser" || tool === "fill" || tool === "move")
+            ? rawP
+            : snapToGrid(rawP);
 
         if (tool === "select") {
-            setSelectedId(pickTop(p));
+            setSelectedId(pickTop(rawP)); // 選択は見た目通りの位置で
             return;
         }
 
         if (tool === "fill") {
-            const id = pickTop(p);
+            const id = pickTop(rawP);
             if (!id) return;
             setItems((prev) => {
                 const next = prev.map((it) => {
@@ -416,7 +446,7 @@ export default function DrawingCanvas() {
         }
 
         if (tool === "eraser") {
-            const id = pickTop(p);
+            const id = pickTop(rawP);
             if (!id) return;
             setItems((prev) => {
                 const next = prev.filter((it) => it.id !== id);
@@ -428,10 +458,10 @@ export default function DrawingCanvas() {
         }
 
         if (tool === "move") {
-            const id = selectedId ?? pickTop(p);
+            const id = selectedId ?? pickTop(rawP);
             setSelectedId(id);
             if (!id) return;
-            movingRef.current = { last: p };
+            movingRef.current = { last: rawP }; // Move開始点は生の座標で取る（相対移動のため）
             return;
         }
 
@@ -439,7 +469,7 @@ export default function DrawingCanvas() {
             setDraft({
                 id: uid(),
                 type: "freehand",
-                points: [p],
+                points: [rawP], // Freehandは生の座標
                 stroke,
                 width: lineWidth,
             });
@@ -489,14 +519,14 @@ export default function DrawingCanvas() {
     function onPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
         const c = canvasRef.current;
         if (!c) return;
-        const p = getCanvasPoint(e, c);
+        const rawP = getCanvasPoint(e, c);
 
         if (tool === "move") {
             const mv = movingRef.current;
             if (!mv || !selectedId) return;
-            const dx = p.x - mv.last.x;
-            const dy = p.y - mv.last.y;
-            mv.last = p;
+            const dx = rawP.x - mv.last.x;
+            const dy = rawP.y - mv.last.y;
+            mv.last = rawP;
 
             setItems((prev) => prev.map((it) => (it.id === selectedId ? translateDrawable(it, dx, dy) : it)));
             return;
@@ -505,11 +535,16 @@ export default function DrawingCanvas() {
         if (!draft) return;
 
         if (draft.type === "freehand") {
-            setDraft({ ...draft, points: [...draft.points, p] });
+            setDraft({ ...draft, points: [...draft.points, rawP] });
             return;
         }
 
+        // 図形ツールはグリッドスナップ
+        let p = snapToGrid(rawP);
+
         if (draft.type === "line" || draft.type === "arrow") {
+            // アングルスナップ適用
+            p = snapAngle(draft.start, p);
             setDraft({ ...draft, end: p });
             return;
         }
@@ -517,6 +552,8 @@ export default function DrawingCanvas() {
         if (draft.type === "rect") {
             const w = p.x - draft.x;
             const h = p.y - draft.y;
+            // 軸スナップ（高さ/幅が極端に小さい場合、0にして直線化するなど）は
+            // グリッドスナップがあればある程度自然にできるため、今回はGrid任せにする
             const r = clampRect(draft.x, draft.y, w, h);
             setDraft({ ...draft, ...r });
             return;
@@ -660,6 +697,27 @@ export default function DrawingCanvas() {
                 ))}
 
                 <div style={{ marginLeft: 8, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <input
+                            type="checkbox"
+                            checked={snapEnabled}
+                            onChange={(e) => setSnapEnabled(e.target.checked)}
+                        />
+                        Snap
+                    </label>
+                    {snapEnabled && (
+                        <select
+                            value={gridSize}
+                            onChange={(e) => setGridSize(Number(e.target.value))}
+                            style={{ padding: "4px", borderRadius: 4 }}
+                        >
+                            <option value={5}>5px</option>
+                            <option value={10}>10px</option>
+                            <option value={20}>20px</option>
+                            <option value={40}>40px</option>
+                            <option value={50}>50px</option>
+                        </select>
+                    )}
                     <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
                         線
                         <input type="color" value={stroke} onChange={(e) => setStroke(e.target.value)} />
