@@ -410,6 +410,33 @@ export default function DrawingCanvas() {
     const movingRef = useRef<{ last: Point } | null>(null);
     const resizingRef = useRef<{ handle: ResizeHandle; startItem: Drawable } | null>(null);
 
+    const duplicateSelected = () => {
+        if (!selectedId) return;
+        const item = items.find((it) => it.id === selectedId);
+        if (!item) return;
+
+        const newItem = JSON.parse(JSON.stringify(item));
+        newItem.id = uid();
+        const translated = translateDrawable(newItem, 10, 10);
+
+        const nextItems = [...items, translated];
+        setItems(nextItems);
+        setSelectedId(translated.id);
+        pushHistory(nextItems, translated.id);
+    };
+
+    // Keyboard Shortcuts
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === "d") {
+                e.preventDefault();
+                duplicateSelected();
+            }
+        };
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [items, selectedId]);
+
 
 
     // canvasの論理サイズ（CSSピクセル）
@@ -1311,6 +1338,21 @@ export default function DrawingCanvas() {
                     }}
                 >
                     Redo
+                </button>
+                <div style={{ width: 1, height: 24, background: "#ccc", margin: "0 8px" }} />
+                <button
+                    onClick={duplicateSelected}
+                    disabled={!selectedId}
+                    style={{
+                        padding: "10px 14px",
+                        borderRadius: 12,
+                        border: "1px solid #999",
+                        background: selectedId ? "#fff" : "#ddd",
+                        opacity: selectedId ? 1 : 0.5,
+                        cursor: selectedId ? "pointer" : "default",
+                    }}
+                >
+                    Duplicate
                 </button>
 
                 <input
