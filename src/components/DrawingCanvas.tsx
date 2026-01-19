@@ -212,6 +212,11 @@ type AppSettings = {
     gridSize: number; // grid px (still used for snapping if desired)
     mmPerPx: number;  // 1px = ? mm
     snapEnabled: boolean;
+    // Numerical Inputs
+    fixedLength?: string;
+    fixedWidth?: string;
+    fixedHeight?: string;
+    fixedDiameter?: string;
 };
 
 type SavePayload = {
@@ -303,7 +308,17 @@ export default function DrawingCanvas() {
         const newSnapshot: Snapshot = {
             items: nextItems,
             selectedId: nextSelectedId,
-            settings: { unit, gridSize, mmPerPx, snapEnabled, ...settingsOverride }
+            settings: {
+                unit,
+                gridSize,
+                mmPerPx,
+                snapEnabled,
+                fixedLength,
+                fixedWidth,
+                fixedHeight,
+                fixedDiameter,
+                ...settingsOverride
+            }
         };
         setHistory((prev) => {
             const newHistory = prev.slice(0, historyIndex + 1);
@@ -327,6 +342,10 @@ export default function DrawingCanvas() {
         setGridSize(snap.settings.gridSize);
         setMmPerPx(snap.settings.mmPerPx);
         setSnapEnabled(snap.settings.snapEnabled);
+        setFixedLength(snap.settings.fixedLength || "");
+        setFixedWidth(snap.settings.fixedWidth || "");
+        setFixedHeight(snap.settings.fixedHeight || "");
+        setFixedDiameter(snap.settings.fixedDiameter || "");
     };
 
     const redo = () => {
@@ -340,6 +359,10 @@ export default function DrawingCanvas() {
         setGridSize(snap.settings.gridSize);
         setMmPerPx(snap.settings.mmPerPx);
         setSnapEnabled(snap.settings.snapEnabled);
+        setFixedLength(snap.settings.fixedLength || "");
+        setFixedWidth(snap.settings.fixedWidth || "");
+        setFixedHeight(snap.settings.fixedHeight || "");
+        setFixedDiameter(snap.settings.fixedDiameter || "");
     };
 
     // Initial History
@@ -454,7 +477,7 @@ export default function DrawingCanvas() {
                 if (unit === "cm") val = distMm / 10;
                 else if (unit === "m") val = distMm / 1000;
 
-                const valStr = Math.round(val * 10) / 10;
+                const valStr = val.toFixed(1);
                 const text = `${valStr} ${unit}`;
 
                 const cx = (d.start.x + d.end.x) / 2;
@@ -640,7 +663,7 @@ export default function DrawingCanvas() {
         // 図形ツールはグリッドスナップ
         let p = snapToGrid(rawP);
 
-        if (draft.type === "line" || draft.type === "arrow") {
+        if (draft.type === "line" || draft.type === "arrow" || draft.type === "measure") {
             // アングルスナップ適用
             p = snapAngle(draft.start, p);
 
@@ -743,6 +766,10 @@ export default function DrawingCanvas() {
                 gridSize,
                 mmPerPx,
                 snapEnabled,
+                fixedLength,
+                fixedWidth,
+                fixedHeight,
+                fixedDiameter,
             },
             meta: { createdAt: new Date().toISOString() },
         };
@@ -803,6 +830,12 @@ export default function DrawingCanvas() {
                     newSettings = { ...parsed.settings, mmPerPx: 1 };
                 }
                 setSnapEnabled(parsed.settings.snapEnabled);
+            }
+            if (newSettings) {
+                setFixedLength(newSettings.fixedLength || "");
+                setFixedWidth(newSettings.fixedWidth || "");
+                setFixedHeight(newSettings.fixedHeight || "");
+                setFixedDiameter(newSettings.fixedDiameter || "");
             }
             setSelectedId(null);
             setDraft(null);
@@ -878,23 +911,7 @@ export default function DrawingCanvas() {
                         />
                         Snap
                     </label>
-                    {snapEnabled && (
-                        <select
-                            value={gridSize}
-                            onChange={(e) => {
-                                const val = Number(e.target.value);
-                                setGridSize(val);
-                                pushHistory(items, selectedId, { gridSize: val });
-                            }}
-                            style={{ padding: "4px", borderRadius: 4 }}
-                        >
-                            <option value={5}>5px</option>
-                            <option value={10}>10px</option>
-                            <option value={20}>20px</option>
-                            <option value={40}>40px</option>
-                            <option value={50}>50px</option>
-                        </select>
-                    )}
+                    {/* Grid Size selector removed as per requirements */}
                     <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
                         1px=
                         <input
@@ -950,6 +967,7 @@ export default function DrawingCanvas() {
                             type="number"
                             value={fixedLength}
                             onChange={(e) => setFixedLength(e.target.value)}
+                            onBlur={() => pushHistory(items, selectedId, { fixedLength })}
                             placeholder="自由"
                             style={{ width: 70, padding: 4, borderRadius: 4 }}
                         />
@@ -963,6 +981,7 @@ export default function DrawingCanvas() {
                                 type="number"
                                 value={fixedWidth}
                                 onChange={(e) => setFixedWidth(e.target.value)}
+                                onBlur={() => pushHistory(items, selectedId, { fixedWidth })}
                                 placeholder="自由"
                                 style={{ width: 70, padding: 4, borderRadius: 4 }}
                             />
@@ -973,6 +992,7 @@ export default function DrawingCanvas() {
                                 type="number"
                                 value={fixedHeight}
                                 onChange={(e) => setFixedHeight(e.target.value)}
+                                onBlur={() => pushHistory(items, selectedId, { fixedHeight })}
                                 placeholder="自由"
                                 style={{ width: 70, padding: 4, borderRadius: 4 }}
                             />
@@ -986,6 +1006,7 @@ export default function DrawingCanvas() {
                             type="number"
                             value={fixedDiameter}
                             onChange={(e) => setFixedDiameter(e.target.value)}
+                            onBlur={() => pushHistory(items, selectedId, { fixedDiameter })}
                             placeholder="自由"
                             style={{ width: 70, padding: 4, borderRadius: 4 }}
                         />
