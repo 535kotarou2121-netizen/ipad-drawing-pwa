@@ -1,5 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
 
+type Snapshot = {
+    items: Drawable[];
+    selectedId: string | null;
+};
 type Point = { x: number; y: number };
 
 type Tool =
@@ -219,6 +223,50 @@ export default function DrawingCanvas() {
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [draft, setDraft] = useState<Drawable | null>(null);
 
+    // History
+    const [history, setHistory] = useState<Snapshot[]>([]);
+    const [historyIndex, setHistoryIndex] = useState<number>(-1);
+
+    const pushHistory = (nextItems: Drawable[], nextSelectedId: string | null) => {
+        const newSnapshot: Snapshot = { items: nextItems, selectedId: nextSelectedId };
+        setHistory((prev) => {
+            const newHistory = prev.slice(0, historyIndex + 1);
+            newHistory.push(newSnapshot);
+            return newHistory;
+        });
+        setHistoryIndex((prev) => prev + 1);
+    };
+
+    const canUndo = historyIndex > 0;
+    const canRedo = historyIndex < history.length - 1;
+
+    const undo = () => {
+        if (!canUndo) return;
+        const nextIndex = historyIndex - 1;
+        setHistoryIndex(nextIndex);
+        const snap = history[nextIndex];
+        setItems(snap.items);
+        setSelectedId(snap.selectedId);
+    };
+
+    const redo = () => {
+        if (!canRedo) return;
+        const nextIndex = historyIndex + 1;
+        setHistoryIndex(nextIndex);
+        const snap = history[nextIndex];
+        setItems(snap.items);
+        setSelectedId(snap.selectedId);
+    };
+
+    // Initial History
+    useEffect(() => {
+        if (history.length === 0) {
+            setHistory([{ items: [], selectedId: null }]);
+            setHistoryIndex(0);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     const movingRef = useRef<{ last: Point } | null>(null);
 
 
@@ -354,13 +402,15 @@ export default function DrawingCanvas() {
         if (tool === "fill") {
             const id = pickTop(p);
             if (!id) return;
-            setItems((prev) =>
-                prev.map((it) => {
+            setItems((prev) => {
+                const next = prev.map((it) => {
                     if (it.id !== id) return it;
                     if (it.type === "rect" || it.type === "circle") return { ...it, fill: fillColor };
                     return it;
-                })
-            );
+                });
+                pushHistory(next, id);
+                return next;
+            });
             setSelectedId(id);
             return;
         }
@@ -368,7 +418,11 @@ export default function DrawingCanvas() {
         if (tool === "eraser") {
             const id = pickTop(p);
             if (!id) return;
-            setItems((prev) => prev.filter((it) => it.id !== id));
+            setItems((prev) => {
+                const next = prev.filter((it) => it.id !== id);
+                pushHistory(next, selectedId === id ? null : selectedId);
+                return next;
+            });
             if (selectedId === id) setSelectedId(null);
             return;
         }
@@ -480,6 +534,16 @@ export default function DrawingCanvas() {
         if (!c) return;
         c.releasePointerCapture(e.pointerId);
 
+        // Move確定時に履歴追加
+        if (movingRef.current) {
+            // Move変更はonPointerMoveですでに行われているため、現在のitemsを履歴に積む
+            // setItemsのコールバックを使って最新のitemsを確実に取得する
+            setItems(prev => {
+                pushHistory(prev, selectedId);
+                return prev;
+            });
+        }
+
         movingRef.current = null;
 
         if (!draft) return;
@@ -493,7 +557,11 @@ export default function DrawingCanvas() {
         })();
 
         if (shouldKeep) {
-            setItems((prev) => [...prev, draft]);
+            setItems((prev) => {
+                const next = [...prev, draft];
+                pushHistory(next, draft.id);
+                return next;
+            });
             setSelectedId(draft.id);
         }
 
@@ -546,6 +614,12 @@ export default function DrawingCanvas() {
             setItems(parsed.items);
             setSelectedId(null);
             setDraft(null);
+
+            // JSON読み込み履歴追加 (初期化に近いが履歴として積む)
+            // state更新後に積むため（ここでは同期的に呼んで問題ないが、念のためsetTimeout等は使わず直接呼ぶ）
+            // ただしsetItemsは非同期なので、useEffect等で検知するか、あるいはここで明示的に積む必要がある
+            // ここでは推移として「読み込み」扱いにする
+            pushHistory(parsed.items, null);
         } catch (err) {
             alert("Failed to open JSON");
         } finally {
@@ -641,6 +715,35 @@ export default function DrawingCanvas() {
                     }}
                 >
                     Open(JSON)
+                </button>
+                <div style={{ width: 1, height: 24, background: "#ccc", margin: "0 8px" }} />
+                <button
+                    onClick={undo}
+                    disabled={!canUndo}
+                    style={{
+                        padding: "10px 14px",
+                        borderRadius: 12,
+                        border: "1px solid #999",
+                        background: canUndo ? "#fff" : "#ddd",
+                        opacity: canUndo ? 1 : 0.5,
+                        cursor: canUndo ? "pointer" : "default",
+                    }}
+                >
+                    Undo
+                </button>
+                <button
+                    onClick={redo}
+                    disabled={!canRedo}
+                    style={{
+                        padding: "10px 14px",
+                        borderRadius: 12,
+                        border: "1px solid #999",
+                        background: canRedo ? "#fff" : "#ddd",
+                        opacity: canRedo ? 1 : 0.5,
+                        cursor: canRedo ? "pointer" : "default",
+                    }}
+                >
+                    Redo
                 </button>
 
                 <input
