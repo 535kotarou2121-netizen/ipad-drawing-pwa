@@ -4,6 +4,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: '/ipad-drawing-pwa/',
   plugins: [
     react(),
     VitePWA({
@@ -25,9 +26,9 @@ export default defineConfig({
             type: 'image/png'
           },
           {
-             src: 'pwa-512x512.png',
-             sizes: '512x512',
-             type: 'image/png'
+            src: 'pwa-512x512.png',
+            sizes: '512x512',
+            type: 'image/png'
           }
         ]
       }
